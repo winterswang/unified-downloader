@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "unified-downloader"
+version = "1.0.0"
+description = "统一年报及IPO文件下载工具，支持A股、美股和港股"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "unified_downloader"}]
+
+[tool.poetry.scripts]
+unified-downloader = "unified_downloader.cli:cli"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+requests = ">=2.28"
+aiohttp = ">=3.8"
+pydantic = ">=2.0,<3.0"
+loguru = ">=0.7"
+tenacity = ">=8.0"
+click = ">=8.0"
+beautifulsoup4 = ">=4.9"
+pyyaml = ">=6.0"
+python-dateutil = ">=2.8"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+pytest-asyncio = "^0.21"
+pytest-cov = "^4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
