@@ -45,17 +45,12 @@ def detect_market(code: str) -> str:
     """自动识别市场"""
     code = code.strip().upper()
 
-    # A股: 6位数字 (沪市) 或 000/001开头 (深市)
-    if code.isdigit():
-        if len(code) == 6:
-            if code.startswith(("6", "5", "9")):
-                return "a"  # 沪市
-            elif code.startswith(("0", "1", "3")):
-                return "a"  # 深市
+    # A股: 6位数字
+    if code.isdigit() and len(code) == 6:
         return "a"
 
-    # 港股: 4-5位数字
-    if code.isdigit() and len(code) in (4, 5):
+    # 港股: 5位数字且0开头 (如 00700, 09988)
+    if code.isdigit() and len(code) == 5 and code.startswith("0"):
         return "h"
 
     # 美股: 字母组成的Ticker
@@ -216,7 +211,7 @@ def download_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "prospectus", "10k", "10q", "s1", "8k"],
+        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -370,7 +365,7 @@ def search_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "prospectus", "10k", "10q", "s1", "8k"],
+        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -455,7 +450,7 @@ def search_list(cli_ctx, code, year, type, market, limit):
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "prospectus", "10k", "10q"],
+        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "6k", "8k"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -763,7 +758,7 @@ def config_show(cli_ctx, format):
         "cache_ttl_days": cfg.download.cache_ttl_days,
         "rate_limit": {
             "failure_threshold": cfg.circuit_breaker.failure_threshold,
-            "timeout_seconds": cfg.circuit_breaker.timeout_seconds,
+            "timeout": cfg.circuit_breaker.timeout,
         },
     }
 

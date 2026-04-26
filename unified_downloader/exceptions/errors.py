@@ -17,7 +17,7 @@ class NetworkError(DownloadError):
         super().__init__(message, "NETWORK_ERROR")
 
 
-class FileNotFoundError(DownloadError):
+class FileNotFoundDownloadError(DownloadError):
     """文件不存在"""
 
     def __init__(self, message: str):

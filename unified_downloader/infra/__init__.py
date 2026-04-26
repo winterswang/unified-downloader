@@ -10,6 +10,7 @@ from unified_downloader.infra.circuit_breaker import (
     CircuitState,
 )
 from unified_downloader.infra.audit import AuditLogger
+from unified_downloader.infra.rate_limiter import RateLimiter
 
 __all__ = [
     "HTTPClient",
@@ -21,4 +22,5 @@ __all__ = [
     "CircuitBreakerManager",
     "CircuitState",
     "AuditLogger",
+    "RateLimiter",
 ]

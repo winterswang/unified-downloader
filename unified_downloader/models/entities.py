@@ -75,38 +75,6 @@ class DataSource:
 
 
 @dataclass
-class CircuitBreakerState:
-    """熔断器状态"""
-
-    name: str
-    state: str  # CLOSED, OPEN, HALF_OPEN
-    failure_count: int = 0
-    success_count: int = 0
-    last_failure_time: Optional[datetime] = None
-    last_state_change: Optional[datetime] = None
-
-
-@dataclass
-class AuditLog:
-    """审计日志"""
-
-    id: Optional[int] = None
-    timestamp: datetime = field(default_factory=datetime.now)
-    event_type: str = ""
-    market: Optional[str] = None
-    code: Optional[str] = None
-    year: Optional[int] = None
-    document_type: Optional[str] = None
-    success: bool = True
-    error_code: Optional[str] = None
-    error_message: Optional[str] = None
-    duration_ms: Optional[int] = None
-    file_size: Optional[int] = None
-    source: Optional[str] = None
-    details: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class CheckpointData:
     """断点数据"""
 

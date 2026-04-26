@@ -1,7 +1,7 @@
 """A股适配器 - 使用 AKShare + 巨潮资讯"""
 
+import asyncio
 import logging
-import time
 import urllib.parse
 from datetime import date
 from typing import Optional, List, Dict, Any, Callable
@@ -12,6 +12,7 @@ from unified_downloader.adapters.base import BaseStockAdapter
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
+from unified_downloader.infra.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +131,7 @@ class AStockAdapter(BaseStockAdapter):
     ):
         super().__init__(http_client, datasources)
         self._search_cache: Dict[str, List[Dict]] = {}
-        self._rate_limiter_interval = rate_limit_interval
-        self._last_request_time = 0.0
-
-    def _wait_rate_limit(self) -> None:
-        """速率限制"""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._rate_limiter_interval:
-            time.sleep(self._rate_limiter_interval - elapsed)
-        self._last_request_time = time.time()
+        self._rate_limiter = RateLimiter(min_interval=rate_limit_interval)
 
     def _format_date(self, dt: date) -> str:
         """格式化日期为YYYYMMDD"""
@@ -186,8 +179,8 @@ class AStockAdapter(BaseStockAdapter):
         **kwargs,
     ) -> DownloadResult:
         """异步下载A股文档"""
-        return self.download(
-            code, year, document_type, datasource, checkpoint, on_progress
+        return await asyncio.to_thread(
+            self.download, code, year, document_type, datasource, checkpoint, on_progress
         )
 
     def _download_annual_report(
@@ -258,7 +251,7 @@ class AStockAdapter(BaseStockAdapter):
             )
 
         # 搜索公告
-        self._wait_rate_limit()
+        self._rate_limiter.wait()
         try:
             df = CninfoAPI.search_disclosure(
                 symbol=symbol,
@@ -371,7 +364,7 @@ class AStockAdapter(BaseStockAdapter):
             elif "三季" in doc_type_lower:
                 category = "三季报"
 
-        self._wait_rate_limit()
+        self._rate_limiter.wait()
         try:
             df = CninfoAPI.search_disclosure(
                 symbol=symbol,

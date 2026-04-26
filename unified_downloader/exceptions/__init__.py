@@ -3,7 +3,7 @@
 from unified_downloader.exceptions.errors import (
     DownloadError,
     NetworkError,
-    FileNotFoundError,
+    FileNotFoundDownloadError,
     RateLimitError,
     WebsiteStructureChangedError,
     MarketUnrecognizedError,
@@ -21,7 +21,7 @@ from unified_downloader.exceptions.errors import (
 __all__ = [
     "DownloadError",
     "NetworkError",
-    "FileNotFoundError",
+    "FileNotFoundDownloadError",
     "RateLimitError",
     "WebsiteStructureChangedError",
     "MarketUnrecognizedError",

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import yaml
 
 from unified_downloader.models.enums import Market
+from unified_downloader.infra.circuit_breaker import CircuitBreakerConfig
 
 
 @dataclass
@@ -33,16 +34,6 @@ class DownloadConfig:
     cache_enabled: bool = True
     cache_ttl_days: int = 30
     cache_max_size_gb: float = 10.0
-
-
-@dataclass
-class CircuitBreakerConfig:
-    """熔断器配置"""
-
-    failure_threshold: int = 5
-    success_threshold: int = 3
-    timeout_seconds: int = 30
-    half_open_max_calls: int = 3
 
 
 @dataclass
@@ -119,7 +110,7 @@ class Config:
         circuit_breaker = CircuitBreakerConfig(
             failure_threshold=cb_data.get("failure_threshold", 5),
             success_threshold=cb_data.get("success_threshold", 3),
-            timeout_seconds=cb_data.get("timeout_seconds", 30),
+            timeout=cb_data.get("timeout", 30),
             half_open_max_calls=cb_data.get("half_open_max_calls", 3),
         )
 

@@ -12,7 +12,7 @@ from unified_downloader.models import (
     BatchResult,
     TaskInfo,
     DataSource,
-    ProgressCallback,
+    ProgressCallbackType,
 )
 from unified_downloader.core import (
     Config,
@@ -24,7 +24,7 @@ from unified_downloader.core import (
 from unified_downloader.exceptions import (
     DownloadError,
     NetworkError,
-    FileNotFoundError,
+    FileNotFoundDownloadError,
     RateLimitError,
     WebsiteStructureChangedError,
     MarketUnrecognizedError,
@@ -45,7 +45,7 @@ __all__ = [
     "BatchResult",
     "TaskInfo",
     "DataSource",
-    "ProgressCallback",
+    "ProgressCallbackType",
     # Core
     "Config",
     "get_default_config",
@@ -55,7 +55,7 @@ __all__ = [
     # Exceptions
     "DownloadError",
     "NetworkError",
-    "FileNotFoundError",
+    "FileNotFoundDownloadError",
     "RateLimitError",
     "WebsiteStructureChangedError",
     "MarketUnrecognizedError",

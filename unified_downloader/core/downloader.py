@@ -427,9 +427,7 @@ class UnifiedDownloader:
         if re.match(r"^[0-9]{6}$", code):
             return Market.A
 
-        # 港股: 4位或5位数字（可能带前导0）
-        if re.match(r"^0?[0-9]{4}$", code):
-            return Market.H
+        # 港股: 5位数字且0开头 (如 00700, 09988)
         if re.match(r"^0[0-9]{4}$", code):
             return Market.H
 

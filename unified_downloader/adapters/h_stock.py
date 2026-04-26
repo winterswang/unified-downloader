@@ -1,9 +1,9 @@
 """港股适配器 - 使用 HKEx API"""
 
+import asyncio
 import json
 import logging
 import re
-import time
 from datetime import date, datetime, timedelta
 from typing import Optional, List, Dict, Any, Callable
 
@@ -12,6 +12,7 @@ from unified_downloader.adapters.base import BaseStockAdapter
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
+from unified_downloader.infra.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -176,15 +177,7 @@ class HStockAdapter(BaseStockAdapter):
     ):
         super().__init__(http_client, datasources)
         self._stock_code_cache: Dict[str, str] = {}
-        self._rate_limiter_interval = rate_limit_interval
-        self._last_request_time = 0.0
-
-    def _wait_rate_limit(self) -> None:
-        """速率限制"""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._rate_limiter_interval:
-            time.sleep(self._rate_limiter_interval - elapsed)
-        self._last_request_time = time.time()
+        self._rate_limiter = RateLimiter(min_interval=rate_limit_interval)
 
     def _get_api(self) -> HKExAPI:
         """获取HKEx API实例"""
@@ -234,9 +227,8 @@ class HStockAdapter(BaseStockAdapter):
         **kwargs,
     ) -> DownloadResult:
         """异步下载港股文档"""
-        # 目前同步实现
-        return self.download(
-            code, year, document_type, datasource, checkpoint, on_progress
+        return await asyncio.to_thread(
+            self.download, code, year, document_type, datasource, checkpoint, on_progress
         )
 
     def _get_stock_id(self, stock_code: str) -> Optional[str]:
@@ -244,7 +236,7 @@ class HStockAdapter(BaseStockAdapter):
         if stock_code in self._stock_code_cache:
             return self._stock_code_cache[stock_code]
 
-        self._wait_rate_limit()
+        self._rate_limiter.wait()
         api = self._get_api()
         stock_info = api.search_stock(stock_code)
 
@@ -345,7 +337,7 @@ class HStockAdapter(BaseStockAdapter):
             from_date = to_date - timedelta(days=365)
 
         # 搜索文档
-        self._wait_rate_limit()
+        self._rate_limiter.wait()
         api = self._get_api()
         documents = api.search_documents(
             from_date=from_date,
@@ -448,7 +440,7 @@ class HStockAdapter(BaseStockAdapter):
             elif "prospectus" in doc_type_lower or "招股" in doc_type_lower:
                 doc_type_config = HKExAPI.IPO_PROSPECTUS
 
-        self._wait_rate_limit()
+        self._rate_limiter.wait()
         api = self._get_api()
         return api.search_documents(
             from_date=from_date,

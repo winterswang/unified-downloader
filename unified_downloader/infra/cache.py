@@ -170,7 +170,7 @@ class CacheManager:
         cached_path.parent.mkdir(parents=True, exist_ok=True)
 
         if str(file_path) != str(cached_path):
-            shutil.copy2(file_path, cached_path)
+            shutil.move(str(file_path), str(cached_path))
 
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.execute(

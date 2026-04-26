@@ -33,23 +33,6 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class DataSourceName(str, Enum):
-    """数据源名称枚举"""
-
-    # A股数据源
-    TONGHUASHUN = "tonghuashun"
-    CNINFO = "cninfo"
-    EASTMONEY = "eastmoney"
-
-    # 美股数据源
-    SEC_EDGAR = "sec_edgar"
-    YAHOO_FINANCE = "yahoo_finance"
-
-    # 港股数据源
-    HKEX = "hkex"
-    AASTOCKS = "aastocks"
-
-
 class EventType(str, Enum):
     """审计事件类型"""
 

@@ -94,13 +94,15 @@ class HTTPClient:
                 response = self.session.request(method, url, **kwargs)
 
                 if response.status_code == 429:
-                    # Rate limit - use longer backoff
+                    # Rate limit - wait and retry
                     retry_after = int(response.headers.get("Retry-After", 60))
                     wait_time = min(retry_after, self.max_backoff)
                     logger.warning(
                         f"Rate limited (429), waiting {wait_time}s before retry..."
                     )
                     time.sleep(wait_time)
+                    if attempt < self.max_retries - 1:
+                        continue
                     raise RateLimitError(f"请求过于频繁 (429): {url}")
 
                 if response.status_code == 404:

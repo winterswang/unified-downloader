@@ -12,7 +12,7 @@ from unified_downloader.models.entities import (
 )
 from unified_downloader.models.callbacks import ProgressCallbackType
 from unified_downloader.core.downloader import UnifiedDownloader
-from unified_downloader.core.config import Config
+from unified_downloader.core.config import Config, get_default_config
 from unified_downloader.infra import AsyncHTTPClient
 
 
@@ -32,7 +32,7 @@ class AsyncUnifiedDownloader:
     """
 
     def __init__(self, config: Optional[Config] = None):
-        self.config = config or UnifiedDownloader.config
+        self.config = config or Config()
         self._downloader = UnifiedDownloader(config)
         self._async_http_client = AsyncHTTPClient()
 

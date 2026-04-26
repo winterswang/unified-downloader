@@ -169,17 +169,14 @@ class AuditLogger:
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
+        sql = "SELECT * FROM audit_logs"
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                f"""
-                SELECT * FROM audit_logs
-                WHERE {where_clause}
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """,
-                (*params, limit),
-            ).fetchall()
+            rows = conn.execute(sql, (*params, limit)).fetchall()
 
             return [dict(row) for row in rows]
 
@@ -237,25 +234,24 @@ class AuditLogger:
             conditions.append("timestamp <= ?")
             params.append(end_date)
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        where_clause = ""
+        if conditions:
+            where_clause = " WHERE " + " AND ".join(conditions)
 
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
 
             # 总记录数
             total = conn.execute(
-                f"""
-                SELECT COUNT(*) as count FROM audit_logs WHERE {where_clause}
-            """,
+                "SELECT COUNT(*) as count FROM audit_logs" + where_clause,
                 params,
             ).fetchone()["count"]
 
             # 成功/失败数
             success_count = conn.execute(
-                f"""
-                SELECT COUNT(*) as count FROM audit_logs
-                WHERE {where_clause} AND success = 1
-            """,
+                "SELECT COUNT(*) as count FROM audit_logs"
+                + where_clause
+                + (" AND " if conditions else " WHERE ") + "success = 1",
                 params,
             ).fetchone()["count"]
 
@@ -263,35 +259,26 @@ class AuditLogger:
 
             # 按事件类型统计
             event_stats = conn.execute(
-                f"""
-                SELECT event_type, COUNT(*) as count,
-                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
-                FROM audit_logs
-                WHERE {where_clause}
-                GROUP BY event_type
-            """,
+                "SELECT event_type, COUNT(*) as count, "
+                "SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count "
+                "FROM audit_logs" + where_clause + " GROUP BY event_type",
                 params,
             ).fetchall()
 
             # 按市场统计
+            market_where = where_clause + (" AND " if conditions else " WHERE ") + "market IS NOT NULL"
             market_stats = conn.execute(
-                f"""
-                SELECT market, COUNT(*) as count,
-                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
-                FROM audit_logs
-                WHERE {where_clause} AND market IS NOT NULL
-                GROUP BY market
-            """,
+                "SELECT market, COUNT(*) as count, "
+                "SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count "
+                "FROM audit_logs" + market_where + " GROUP BY market",
                 params,
             ).fetchall()
 
             # 平均耗时
+            duration_where = where_clause + (" AND " if conditions else " WHERE ") + "duration_ms IS NOT NULL"
             avg_duration = conn.execute(
-                f"""
-                SELECT AVG(duration_ms) as avg_duration
-                FROM audit_logs
-                WHERE {where_clause} AND duration_ms IS NOT NULL
-            """,
+                "SELECT AVG(duration_ms) as avg_duration "
+                "FROM audit_logs" + duration_where,
                 params,
             ).fetchone()["avg_duration"]
 

@@ -1,29 +1,9 @@
 """回调函数类型定义"""
 
-from typing import Callable, Any
-from dataclasses import dataclass
+from typing import Callable, Any, Dict
 
-
-@dataclass
-class ProgressCallback:
-    """
-    进度回调函数
-
-    Args:
-        downloaded: 已下载字节数
-        total: 总字节数
-        status: 当前状态
-        speed: 下载速度 (bytes/s)
-    """
-
-    downloaded: int
-    total: int
-    status: str = "downloading"
-    speed: float = 0.0
-
-
-# 进度回调类型
-ProgressCallbackType = Callable[[ProgressCallback], None]
+# 进度回调类型 - 接收下载进度字典
+ProgressCallbackType = Callable[[Dict[str, Any]], None]
 
 # 通用回调类型
 GenericCallbackType = Callable[[Any], None]
