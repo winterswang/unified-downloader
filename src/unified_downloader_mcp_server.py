@@ -34,6 +34,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from unified_downloader import UnifiedDownloader, Market
 
+# Module-level singleton to avoid recreating HTTP sessions, SQLite connections, etc.
+_downloader: UnifiedDownloader | None = None
+
+
+def _get_downloader() -> UnifiedDownloader:
+    """Get or create the singleton UnifiedDownloader instance."""
+    global _downloader
+    if _downloader is None:
+        _downloader = UnifiedDownloader()
+    return _downloader
+
 
 server = Server("unified-downloader")
 
@@ -108,7 +119,7 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: Any) -> CallToolResult:
     try:
-        downloader = UnifiedDownloader()
+        downloader = _get_downloader()
 
         if name == "download_document":
             code = arguments.get("code")
@@ -236,7 +247,7 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
                 code=config["code"],
                 year=config["year"],
                 document_type=config["type"],
-                market=market,
+                market=Market(market),
             )
 
             if result.success:

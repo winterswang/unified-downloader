@@ -427,8 +427,8 @@ class UnifiedDownloader:
         if re.match(r"^[0-9]{6}$", code):
             return Market.A
 
-        # 港股: 5位数字且0开头 (如 00700, 09988)
-        if re.match(r"^0[0-9]{4}$", code):
+        # 港股: 4-5位数字且0开头 (如 00700, 09988, 1234)
+        if re.match(r"^0[0-9]{3,4}$", code):
             return Market.H
 
         # 美股: 英文字母代码
@@ -498,6 +498,35 @@ class UnifiedDownloader:
     def get_cache_stats(self) -> Dict[str, Any]:
         """获取缓存统计"""
         return self._cache_manager.get_stats()
+
+    def search(
+        self,
+        code: str,
+        year: Optional[int] = None,
+        document_type: Optional[str] = None,
+        market: Optional[Market] = None,
+    ) -> List[Dict[str, Any]]:
+        """搜索可用文档"""
+        if market is None:
+            market = self._detect_market(code)
+        adapter = self._adapters.get(market)
+        if adapter:
+            return adapter.search(code, year, document_type)
+        return []
+
+    def get_available_years(
+        self,
+        code: str,
+        document_type: Optional[str] = None,
+        market: Optional[Market] = None,
+    ) -> List[int]:
+        """获取可用年份"""
+        if market is None:
+            market = self._detect_market(code)
+        adapter = self._adapters.get(market)
+        if adapter:
+            return adapter.get_available_years(code, document_type)
+        return []
 
     def clear_cache(self, older_than_days: Optional[int] = None) -> int:
         """清理缓存"""

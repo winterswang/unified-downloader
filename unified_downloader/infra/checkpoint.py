@@ -1,12 +1,21 @@
 """断点续传管理"""
 
 import json
-import fcntl
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
 
 from unified_downloader.exceptions import CheckpointError
+
+# Platform-compatible file locking
+if sys.platform == "win32":
+    import msvcrt
+else:
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
 
 
 class CheckpointManager:
@@ -19,11 +28,27 @@ class CheckpointManager:
     def __init__(self, checkpoint_dir: Path | str):
         self._checkpoint_dir = Path(checkpoint_dir)
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self._lock_file = self._checkpoint_dir / ".lock"
+        self._lock_file_path = self._checkpoint_dir / ".lock"
 
     def _get_checkpoint_path(self, task_id: str) -> Path:
         """获取断点文件路径"""
         return self._checkpoint_dir / f"{task_id}.json"
+
+    @staticmethod
+    def _lock_file(f, exclusive: bool = True) -> None:
+        """Platform-compatible file lock"""
+        if sys.platform == "win32":
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK if exclusive else msvcrt.LK_NBLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    @staticmethod
+    def _unlock_file(f) -> None:
+        """Platform-compatible file unlock"""
+        if sys.platform == "win32":
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def save(
         self,
@@ -62,9 +87,9 @@ class CheckpointManager:
 
         try:
             with open(checkpoint_path, "w", encoding="utf-8") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                self._lock_file(f)
                 json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                self._unlock_file(f)
         except Exception as e:
             raise CheckpointError(f"保存断点失败: {e}")
 
@@ -85,9 +110,9 @@ class CheckpointManager:
 
         try:
             with open(checkpoint_path, "r", encoding="utf-8") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                self._lock_file(f, exclusive=False)
                 data = json.load(f)
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                self._unlock_file(f)
                 return data
         except Exception as e:
             raise CheckpointError(f"读取断点失败: {e}")

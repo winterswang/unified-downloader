@@ -165,12 +165,12 @@ class CacheManager:
         now = datetime.now()
         expires_at = now + timedelta(days=ttl)
 
-        # 移动文件到缓存目录
+        # Copy file to cache directory
         cached_path = self._cache_dir / market / code[:3] / f"{key}{file_path.suffix}"
         cached_path.parent.mkdir(parents=True, exist_ok=True)
 
         if str(file_path) != str(cached_path):
-            shutil.move(str(file_path), str(cached_path))
+            shutil.copy2(str(file_path), str(cached_path))
 
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.execute(
@@ -213,11 +213,19 @@ class CacheManager:
             self.clear(older_than_days=7)
 
     def get_size(self) -> int:
-        """
-        获取缓存总大小
+        """获取缓存总大小（从SQLite聚合，O(1)）"""
+        with sqlite3.connect(str(self._db_path)) as conn:
+            try:
+                result = conn.execute(
+                    "SELECT COALESCE(SUM(size), 0) FROM cache_entries"
+                ).fetchone()[0]
+                return result
+            except Exception:
+                # Fallback to directory scan if DB is corrupted
+                return self._get_size_from_disk()
 
-        注意：此方法遍历目录，O(n)复杂度
-        """
+    def _get_size_from_disk(self) -> int:
+        """从磁盘遍历获取缓存大小（fallback）"""
         total_size = 0
         for cache_file in self._cache_dir.rglob("*"):
             if cache_file.is_file() and cache_file.name != ".cache.db":

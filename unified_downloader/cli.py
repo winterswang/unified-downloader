@@ -49,8 +49,8 @@ def detect_market(code: str) -> str:
     if code.isdigit() and len(code) == 6:
         return "a"
 
-    # 港股: 5位数字且0开头 (如 00700, 09988)
-    if code.isdigit() and len(code) == 5 and code.startswith("0"):
+    # 港股: 4-5位数字且0开头 (如 00700, 09988, 1234)
+    if code.isdigit() and 4 <= len(code) <= 5 and code.startswith("0"):
         return "h"
 
     # 美股: 字母组成的Ticker
@@ -294,7 +294,7 @@ def download_batch(cli_ctx, file, output, workers, errors, verbose):
             click.echo(f"  ... 还有 {len(tasks) - 10} 个任务")
 
     # 执行批量下载
-    result = downloader.batch_download(tasks, max_workers=workers, max_errors=errors)
+    result = downloader.batch_download(tasks, max_workers=workers)
 
     click.echo()
     click.echo(click.style("批量下载完成:", bold=True))
@@ -392,23 +392,7 @@ def search_list(cli_ctx, code, year, type, market, limit):
     click.echo(f"搜索 {code} {year or '所有年份'} {type}...")
 
     try:
-        if market_enum == Market.A:
-            from unified_downloader.adapters.a_stock import AStockAdapter
-
-            adapter = AStockAdapter(downloader._http_client, [])
-        elif market_enum == Market.H:
-            from unified_downloader.adapters.h_stock import HStockAdapter
-
-            adapter = HStockAdapter(downloader._http_client, [])
-        elif market_enum == Market.M:
-            from unified_downloader.adapters.m_stock import MStockAdapter
-
-            adapter = MStockAdapter(downloader._http_client, [])
-        else:
-            click.echo(click.style(f"✗ 不支持的市场: {market}", fg="red"))
-            sys.exit(1)
-
-        results = adapter.search(code, year, type)
+        results = downloader.search(code, year, type, market=market_enum)
 
         if not results:
             click.echo("未找到文档")
@@ -420,9 +404,9 @@ def search_list(cli_ctx, code, year, type, market, limit):
         for i, doc in enumerate(results[:limit]):
             if market_enum == Market.A:
                 title = doc.get("title", "N/A")
-                time = doc.get("time", "N/A")
+                doc_time = doc.get("time", "N/A")
                 click.echo(f"{i + 1}. {title}")
-                click.echo(f"   时间: {time}")
+                click.echo(f"   时间: {doc_time}")
             elif market_enum == Market.H:
                 title = doc.get("title", "N/A")
                 date_time = doc.get("date_time", "N/A")
@@ -474,23 +458,7 @@ def search_years(cli_ctx, code, type, market):
     market_enum = Market(market)
 
     try:
-        if market_enum == Market.A:
-            from unified_downloader.adapters.a_stock import AStockAdapter
-
-            adapter = AStockAdapter(downloader._http_client, [])
-        elif market_enum == Market.H:
-            from unified_downloader.adapters.h_stock import HStockAdapter
-
-            adapter = HStockAdapter(downloader._http_client, [])
-        elif market_enum == Market.M:
-            from unified_downloader.adapters.m_stock import MStockAdapter
-
-            adapter = MStockAdapter(downloader._http_client, [])
-        else:
-            click.echo(click.style(f"✗ 不支持的市场: {market}", fg="red"))
-            sys.exit(1)
-
-        years = adapter.get_available_years(code, type)
+        years = downloader.get_available_years(code, type, market=market_enum)
 
         if not years:
             click.echo("未找到可用年份")

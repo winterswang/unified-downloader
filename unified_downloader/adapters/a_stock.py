@@ -158,7 +158,15 @@ class AStockAdapter(BaseStockAdapter):
             return self._download_interim_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["quarterly", "季度", "一季报", "三季报"]:
+        elif doc_type_lower in ["quarterly_q1", "一季报", "q1"]:
+            return self._download_report(
+                code, year, "一季报", "quarterly_report", checkpoint, on_progress
+            )
+        elif doc_type_lower in ["quarterly_q3", "三季报", "q3"]:
+            return self._download_report(
+                code, year, "三季报", "quarterly_report", checkpoint, on_progress
+            )
+        elif doc_type_lower in ["quarterly", "季度"]:
             return self._download_quarterly_report(
                 code, year, datasource, checkpoint, on_progress
             )
