@@ -116,7 +116,12 @@ class CircuitBreaker:
             return True
 
         if self.state == CircuitState.HALF_OPEN:
-            return self._half_open_calls < self.config.half_open_max_calls
+            if self._half_open_calls < self.config.half_open_max_calls:
+                self._half_open_calls += 1
+                return True
+            return False
+
+        return False
 
         return False
 

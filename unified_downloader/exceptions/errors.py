@@ -84,7 +84,7 @@ class AuthenticationError(DownloadError):
         super().__init__(message, "AUTH_ERROR")
 
 
-class TimeoutError(DownloadError):
+class DownloadTimeoutError(DownloadError):
     """请求超时"""
 
     def __init__(self, message: str):

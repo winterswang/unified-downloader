@@ -329,30 +329,30 @@ class MStockAdapter(BaseStockAdapter):
 
         return None
 
-    def _download_10k(
+    def _download_form(
         self,
         code: str,
+        form_type: str,
         year: Optional[int],
-        datasource: Optional[DataSource],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载10-K年报"""
+        """下载指定类型SEC文档的通用方法"""
         ticker = code.upper()
 
         try:
-            filings = self._search_filings(ticker, "10-K", year, size=1)
+            filings = self._search_filings(ticker, form_type, year, size=1)
 
             if not filings:
                 return DownloadResult(
                     success=False,
                     error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year} 年的10-K文件",
+                    error_message=f"未找到 {ticker} {year or ''} 的{form_type}文件",
                 )
 
             filing = filings[0]
             return self._download_filing(
-                filing, ticker, "10-K", year, on_progress, checkpoint
+                filing, ticker, form_type, year, on_progress, checkpoint
             )
 
         except NetworkError as e:
@@ -363,6 +363,17 @@ class MStockAdapter(BaseStockAdapter):
             return DownloadResult(
                 success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
             )
+
+    def _download_10k(
+        self,
+        code: str,
+        year: Optional[int],
+        datasource: Optional[DataSource],
+        checkpoint: Optional[Dict[str, Any]],
+        on_progress: Optional[Callable],
+    ) -> DownloadResult:
+        """下载10-K年报"""
+        return self._download_form(code, "10-K", year, checkpoint, on_progress)
 
     def _download_10q(
         self,
@@ -373,31 +384,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """下载10-Q季报"""
-        ticker = code.upper()
-
-        try:
-            filings = self._search_filings(ticker, "10-Q", year, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year} 年的10-Q文件",
-                )
-
-            filing = filings[0]
-            return self._download_filing(
-                filing, ticker, "10-Q", year, on_progress, checkpoint
-            )
-
-        except NetworkError as e:
-            return DownloadResult(
-                success=False, error_code=e.error_code, error_message=str(e)
-            )
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return self._download_form(code, "10-Q", year, checkpoint, on_progress)
 
     def _download_s1(
         self,
@@ -408,32 +395,8 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """下载S-1招股说明书"""
-        ticker = code.upper()
         form_type = "S-1" if document_type.lower() == "s1" else "S-1/A"
-
-        try:
-            filings = self._search_filings(ticker, form_type, None, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} 的{form_type}文件",
-                )
-
-            filing = filings[0]
-            return self._download_filing(
-                filing, ticker, form_type, None, on_progress, checkpoint
-            )
-
-        except NetworkError as e:
-            return DownloadResult(
-                success=False, error_code=e.error_code, error_message=str(e)
-            )
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return self._download_form(code, form_type, None, checkpoint, on_progress)
 
     def _download_6k(
         self,
@@ -444,31 +407,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """下载6-K报告"""
-        ticker = code.upper()
-
-        try:
-            filings = self._search_filings(ticker, "6-K", year, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year} 年的6-K文件",
-                )
-
-            filing = filings[0]
-            return self._download_filing(
-                filing, ticker, "6-K", year, on_progress, checkpoint
-            )
-
-        except NetworkError as e:
-            return DownloadResult(
-                success=False, error_code=e.error_code, error_message=str(e)
-            )
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return self._download_form(code, "6-K", year, checkpoint, on_progress)
 
     def _download_filing(
         self,
@@ -564,6 +503,41 @@ class MStockAdapter(BaseStockAdapter):
             error_message=f"下载失败: {last_error}",
         )
 
+    async def _async_download_form(
+        self,
+        http_client: AsyncHTTPClient,
+        code: str,
+        form_type: str,
+        year: Optional[int],
+        checkpoint: Optional[Dict[str, Any]],
+        on_progress: Optional[Callable],
+    ) -> DownloadResult:
+        """异步下载指定类型SEC文档的通用方法"""
+        ticker = code.upper()
+
+        try:
+            if self._init_edgar():
+                filings = self._search_edgar(ticker, form_type, year, size=1)
+            else:
+                filings = self._search_sec_api(ticker, form_type, year, size=1)
+
+            if not filings:
+                return DownloadResult(
+                    success=False,
+                    error_code="NO_FILINGS_FOUND",
+                    error_message=f"未找到 {ticker} {year or ''} 的{form_type}",
+                )
+
+            filing = filings[0]
+            return await self._download_filing_async(
+                http_client, filing, ticker, form_type, year, on_progress, checkpoint
+            )
+
+        except Exception as e:
+            return DownloadResult(
+                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
+            )
+
     async def _async_download_10k(
         self,
         http_client: AsyncHTTPClient,
@@ -574,31 +548,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """异步下载10-K年报"""
-        ticker = code.upper()
-
-        try:
-            # 尝试edgartools
-            if self._init_edgar():
-                filings = self._search_edgar(ticker, "10-K", year, size=1)
-            else:
-                filings = self._search_sec_api(ticker, "10-K", year, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year} 年的10-K",
-                )
-
-            filing = filings[0]
-            return await self._download_filing_async(
-                http_client, filing, ticker, "10-K", year, on_progress, checkpoint
-            )
-
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return await self._async_download_form(http_client, code, "10-K", year, checkpoint, on_progress)
 
     async def _async_download_10q(
         self,
@@ -610,30 +560,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """异步下载10-Q季报"""
-        ticker = code.upper()
-
-        try:
-            if self._init_edgar():
-                filings = self._search_edgar(ticker, "10-Q", year, size=1)
-            else:
-                filings = self._search_sec_api(ticker, "10-Q", year, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year} 年的10-Q",
-                )
-
-            filing = filings[0]
-            return await self._download_filing_async(
-                http_client, filing, ticker, "10-Q", year, on_progress, checkpoint
-            )
-
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return await self._async_download_form(http_client, code, "10-Q", year, checkpoint, on_progress)
 
     async def _async_download_s1(
         self,
@@ -645,31 +572,8 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """异步下载S-1招股说明书"""
-        ticker = code.upper()
         form_type = "S-1" if document_type.lower() == "s1" else "S-1/A"
-
-        try:
-            if self._init_edgar():
-                filings = self._search_edgar(ticker, form_type, None, size=1)
-            else:
-                filings = self._search_sec_api(ticker, form_type, None, size=1)
-
-            if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} 的{form_type}",
-                )
-
-            filing = filings[0]
-            return await self._download_filing_async(
-                http_client, filing, ticker, form_type, None, on_progress, checkpoint
-            )
-
-        except Exception as e:
-            return DownloadResult(
-                success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
-            )
+        return await self._async_download_form(http_client, code, form_type, None, checkpoint, on_progress)
 
     async def _download_filing_async(
         self,

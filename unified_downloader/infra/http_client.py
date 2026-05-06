@@ -12,7 +12,7 @@ import aiohttp
 from unified_downloader.exceptions import (
     NetworkError,
     RateLimitError,
-    TimeoutError,
+    DownloadTimeoutError,
     FileIntegrityError,
 )
 
@@ -112,7 +112,7 @@ class HTTPClient:
                 return response
 
             except requests.exceptions.Timeout:
-                last_exception = TimeoutError(f"请求超时: {url}")
+                last_exception = DownloadTimeoutError(f"请求超时: {url}")
                 if attempt < self.max_retries - 1:
                     time.sleep(min(self.retry_backoff * (2**attempt), self.max_backoff))
                 continue
@@ -135,7 +135,7 @@ class HTTPClient:
                     continue
                 raise
 
-            except (RateLimitError, FileIntegrityError, TimeoutError):
+            except (RateLimitError, FileIntegrityError, DownloadTimeoutError):
                 raise
 
             except Exception as e:
@@ -187,6 +187,20 @@ class HTTPClient:
 
         start_time = time.time()
         response = self._request("GET", url, headers=request_headers, stream=True)
+
+        # Validate server supports Range resumption
+        if checkpoint and downloaded > 0:
+            if response.status_code != 206:
+                # Server doesn't support Range; restart from beginning
+                logger.warning(
+                    f"Server returned {response.status_code} instead of 206 for Range request; restarting download"
+                )
+                downloaded = 0
+                mode = "wb"
+                # Re-fetch without Range header
+                response.close()
+                response = self._request("GET", url, stream=True)
+
         total_size = int(response.headers.get("content-length", 0))
 
         md5_hash = hashlib.md5()
@@ -283,8 +297,8 @@ class AsyncHTTPClient:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs,
-    ) -> aiohttp.ClientResponse:
-        """发送GET请求"""
+    ) -> dict:
+        """发送GET请求，返回响应数据dict"""
         return await self._request("GET", url, params=params, headers=headers, **kwargs)
 
     async def post(
@@ -294,14 +308,14 @@ class AsyncHTTPClient:
         json: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs,
-    ) -> aiohttp.ClientResponse:
-        """发送POST请求"""
+    ) -> dict:
+        """发送POST请求，返回响应数据dict"""
         return await self._request(
             "POST", url, data=data, json=json, headers=headers, **kwargs
         )
 
-    async def _request(self, method: str, url: str, **kwargs) -> aiohttp.ClientResponse:
-        """发送HTTP请求"""
+    async def _request(self, method: str, url: str, **kwargs) -> dict:
+        """发送HTTP请求并返回响应数据"""
         session = await self.session
 
         last_exception = None
@@ -315,10 +329,18 @@ class AsyncHTTPClient:
                         raise FileIntegrityError(f"资源不存在 (404): {url}")
 
                     response.raise_for_status()
-                    return response
+
+                    # Read response body before exiting context manager
+                    body = await response.read()
+                    return {
+                        "status": response.status,
+                        "headers": dict(response.headers),
+                        "body": body,
+                        "content_type": response.content_type,
+                    }
 
             except aiohttp.ClientTimeout:
-                last_exception = TimeoutError(f"请求超时: {url}")
+                last_exception = DownloadTimeoutError(f"请求超时: {url}")
                 if attempt < self.max_retries - 1:
                     await self._sleep(
                         min(self.retry_backoff * (2**attempt), self.max_backoff)
@@ -343,7 +365,7 @@ class AsyncHTTPClient:
                     continue
                 raise
 
-            except (RateLimitError, FileIntegrityError, TimeoutError):
+            except (RateLimitError, FileIntegrityError, DownloadTimeoutError):
                 raise
 
             except Exception as e:
