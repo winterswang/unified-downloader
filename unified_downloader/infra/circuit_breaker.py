@@ -123,8 +123,6 @@ class CircuitBreaker:
 
         return False
 
-        return False
-
     def execute(self, func: Callable, *args, **kwargs) -> Any:
         """
         执行函数，带熔断保护
@@ -141,9 +139,6 @@ class CircuitBreaker:
         """
         if not self.can_execute():
             raise CircuitBreakerOpenError(self.name)
-
-        if self.state == CircuitState.HALF_OPEN:
-            self._half_open_calls += 1
 
         try:
             result = func(*args, **kwargs)
