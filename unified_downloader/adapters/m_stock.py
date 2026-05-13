@@ -68,12 +68,22 @@ class MStockAdapter(BaseStockAdapter):
         return identity
 
     def _init_edgar(self) -> bool:
-        """初始化edgartools"""
+        """初始化edgartools（兼容 edgar 4.x 和 5.x）"""
         try:
-            from edgar import set_identity
-
             identity = self._get_edgar_identity()
-            set_identity(identity)
+            # edgar 5.x: set_identity(name, email)
+            # edgar 4.x: set_identity(email)
+            import edgar as edgar_module
+            if hasattr(edgar_module, "set_identity"):
+                try:
+                    edgar_module.set_identity("UnifiedDownloader", identity)
+                except TypeError:
+                    # Fallback to 4.x single-arg signature
+                    edgar_module.set_identity(identity)
+            else:
+                # Older versions: from edgar import set_identity
+                from edgar import set_identity  # type: ignore[attr-defined]
+                set_identity(identity)
             return True
         except Exception as e:
             logger.warning(f"edgartools初始化失败: {e}")
@@ -102,6 +112,8 @@ class MStockAdapter(BaseStockAdapter):
             )
         elif doc_type_lower in ["6k", "8k"]:
             return self._download_6k(code, year, datasource, checkpoint, on_progress)
+        elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
+            return self._download_form(code, "20-F", year, checkpoint, on_progress)
         else:
             return self._download_10k(code, year, datasource, checkpoint, on_progress)
 
@@ -131,6 +143,14 @@ class MStockAdapter(BaseStockAdapter):
             return await self._async_download_s1(
                 http_client, code, document_type, datasource, checkpoint, on_progress
             )
+        elif doc_type_lower in ["6k", "8k"]:
+            return await self._async_download_form(
+                http_client, code, "6-K" if doc_type_lower == "6k" else "8-K", year, checkpoint, on_progress
+            )
+        elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
+            return await self._async_download_form(
+                http_client, code, "20-F", year, checkpoint, on_progress
+            )
         else:
             return await self._async_download_10k(
                 http_client, code, year, datasource, checkpoint, on_progress
@@ -153,8 +173,18 @@ class MStockAdapter(BaseStockAdapter):
         from edgar import Company
 
         try:
-            company = Company(ticker.upper())
-            edgar_filings = company.get_filings(form=form_type)
+            # edgar 5.x: Company(name, cik) with keyword or positional args
+            # edgar 4.x: Company(cik) with single arg
+            try:
+                company = Company(ticker.upper())
+            except TypeError:
+                company = Company(ticker.upper(), ticker.upper())
+
+            # edgar 5.x: get_all_filings(); edgar 4.x: get_filings()
+            if hasattr(company, "get_all_filings"):
+                edgar_filings = company.get_all_filings(form=form_type)
+            else:
+                edgar_filings = company.get_filings(form=form_type)
 
             results = []
             for filing in edgar_filings:

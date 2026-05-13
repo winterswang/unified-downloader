@@ -17,10 +17,17 @@ class DocumentType(str, Enum):
 
     ANNUAL_REPORT = "annual_report"  # 年度报告
     INTERIM_REPORT = "interim_report"  # 中期报告
+    QUARTERLY = "quarterly"  # 季度报告（一季报/三季报）
+    Q1_REPORT = "q1_report"  # 一季报
+    Q3_REPORT = "q3_report"  # 三季报
     PROSPECTUS = "prospectus"  # 招股说明书
     TEN_K = "10k"  # 美股10-K年报
+    TEN_Q = "10q"  # 美股10-Q季报
     S1 = "s1"  # 美股S-1招股书
     S1A = "s1a"  # 美股S-1A修正
+    SIX_K = "6k"  # 美股外国公司6-K临时报告
+    EIGHT_K = "8k"  # 美股8-K重大事件报告
+    TWENTY_F = "20f"  # 美股外国公司20-F年报
 
 
 class TaskStatus(str, Enum):

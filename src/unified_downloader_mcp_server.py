@@ -71,7 +71,7 @@ async def list_tools() -> list[Tool]:
                     "document_type": {
                         "type": "string",
                         "default": "annual_report",
-                        "description": "文档类型:\n- A股: annual_report, interim_report, quarterly\n- 港股: annual_report, interim_report, prospectus\n- 美股: 10k, 10q, s1, 8k",
+                        "description": "文档类型:\n- A股: annual_report, interim_report, quarterly, q1_report, q3_report\n- 港股: annual_report, interim_report, prospectus\n- 美股: 10k, 10q, s1, s1a, 6k, 8k, 20f",
                     },
                     "output_dir": {"type": "string", "description": "输出目录路径"},
                 },

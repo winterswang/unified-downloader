@@ -160,7 +160,7 @@ def help_markets(cli_ctx):
     click.echo()
     click.echo("美股 (市场: m)")
     click.echo("  - 股票代码: 字母Ticker (如 AAPL, TSLA)")
-    click.echo("  - 支持类型: 10k, 10q, s1, 8k, annual_report")
+    click.echo("  - 支持类型: 10k, 10q, s1, s1a, 6k, 8k, 20f, annual_report")
     click.echo("  - 数据源: SEC EDGAR (edgartools)")
 
 
@@ -211,7 +211,7 @@ def download_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -365,7 +365,7 @@ def search_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -434,7 +434,7 @@ def search_list(cli_ctx, code, year, type, market, limit):
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "prospectus", "10k", "10q", "s1", "6k", "8k"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",
