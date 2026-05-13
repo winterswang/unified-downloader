@@ -188,7 +188,13 @@ class AStockAdapter(BaseStockAdapter):
     ) -> DownloadResult:
         """异步下载A股文档"""
         return await asyncio.to_thread(
-            self.download, code, year, document_type, datasource, checkpoint, on_progress
+            self.download,
+            code,
+            year,
+            document_type,
+            datasource,
+            checkpoint,
+            on_progress,
         )
 
     def _download_annual_report(
@@ -225,11 +231,17 @@ class AStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载季度报告"""
-        # 默认下载一季报
-        return self._download_report(
+        """下载季度报告（一季报+三季报）"""
+        # 尝试下载一季报，失败则尝试三季报
+        result = self._download_report(
             code, year, "一季报", "quarterly_report", checkpoint, on_progress
         )
+        if not result.success:
+            # 一季报未找到，尝试三季报
+            result = self._download_report(
+                code, year, "三季报", "quarterly_report", checkpoint, on_progress
+            )
+        return result
 
     def _download_report(
         self,
@@ -370,6 +382,10 @@ class AStockAdapter(BaseStockAdapter):
             ):
                 category = "一季报"
             elif "三季" in doc_type_lower:
+                category = "三季报"
+            elif "q1" in doc_type_lower:
+                category = "一季报"
+            elif "q3" in doc_type_lower:
                 category = "三季报"
 
         self._rate_limiter.wait()

@@ -424,6 +424,16 @@ class AsyncHTTPClient:
         start_time = time.time()
 
         async with session.get(url, headers=headers) as response:
+            # Validate server supports Range resumption
+            if checkpoint and downloaded > 0:
+                if response.status != 206:
+                    # Server doesn't support Range; restart from beginning
+                    logger.warning(
+                        f"Server returned {response.status} instead of 206 for Range request; restarting download"
+                    )
+                    downloaded = 0
+                    mode = "wb"
+
             total_size = int(response.headers.get("content-length", 0))
 
             md5_hash = hashlib.md5()
