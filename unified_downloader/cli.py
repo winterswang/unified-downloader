@@ -88,6 +88,8 @@ def echo_result(result, verbose=False):
             click.echo(click.style("  (来自缓存)", fg="cyan"))
         if result.converted_to_pdf:
             click.echo(click.style("  (已转换为PDF)", fg="cyan"))
+        if result.translated:
+            click.echo(click.style(f"  (已翻译: {result.translated_file_path})", fg="cyan"))
         if verbose and result.metadata:
             click.echo("  元数据:")
             for k, v in result.metadata.items():
@@ -234,9 +236,10 @@ def download_group():
 @click.option("--output", "-o", type=click.Path(), help="输出目录")
 @click.option("--no-cache", is_flag=True, help="禁用缓存")
 @click.option("--pdf", is_flag=True, help="将HTML文件自动转换为PDF")
+@click.option("--translate", type=str, default=None, help="翻译目标语言 (如 zh)")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @ctx
-def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, verbose):
+def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, translate, verbose):
     """下载单个文档"""
     downloader = cli_ctx.downloader
 
@@ -256,6 +259,7 @@ def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, ve
         market=market_enum,
         use_cache=not no_cache,
         convert_to_pdf=pdf if pdf else None,
+        translate=translate,
     )
 
     echo_result(result, verbose=verbose)
@@ -735,6 +739,11 @@ def config_show(cli_ctx, format):
         "chunk_size": cfg.download.chunk_size,
         "cache_enabled": cfg.download.cache_enabled,
         "cache_ttl_days": cfg.download.cache_ttl_days,
+        "convert_to_pdf": cfg.download.convert_to_pdf,
+        "translate_model": cfg.translate_model,
+        "translate_base_url": cfg.translate_base_url,
+        "translate_lang": cfg.translate_lang,
+        "translate_qps": cfg.translate_qps,
         "rate_limit": {
             "failure_threshold": cfg.circuit_breaker.failure_threshold,
             "timeout": cfg.circuit_breaker.timeout,
@@ -751,6 +760,11 @@ def config_show(cli_ctx, format):
         click.echo(f"  最大并发:   {config_data['max_workers']}")
         click.echo(f"  缓存启用:   {config_data['cache_enabled']}")
         click.echo(f"  缓存TTL:    {config_data['cache_ttl_days']} 天")
+        click.echo(f"  自动转PDF:  {config_data['convert_to_pdf']}")
+        click.echo(f"  翻译模型:   {config_data['translate_model']}")
+        click.echo(f"  翻译API:    {config_data['translate_base_url']}")
+        click.echo(f"  翻译语言:   {config_data['translate_lang'] or '未设置'}")
+        click.echo(f"  翻译QPS:    {config_data['translate_qps']}")
 
 
 @config_group.command("env")
@@ -761,6 +775,7 @@ def config_env(cli_ctx):
         ("EDGAR_IDENTITY", "edgartools身份标识 (email)"),
         ("SEC_API_KEY", "sec-api API密钥"),
         ("SEC_USER_AGENT", "SEC下载User-Agent"),
+        ("OPENAI_API_KEY", "翻译API密钥 (BabelDOC)"),
         ("DOWNLOAD_DIR", "下载目录"),
         ("CACHE_DIR", "缓存目录"),
     ]

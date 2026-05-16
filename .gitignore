@@ -48,6 +48,7 @@ data/checkpoint/
 # Environment
 .env
 .env.local
+config.yaml
 
 # Logs
 *.log

@@ -20,6 +20,8 @@ class DownloadResult:
     duration_ms: Optional[int] = None
     cached: bool = False
     converted_to_pdf: bool = False
+    translated: bool = False
+    translated_file_path: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property

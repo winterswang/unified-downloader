@@ -118,3 +118,10 @@ class ConversionError(DownloadError):
 
     def __init__(self, message: str):
         super().__init__(message, "CONVERSION_ERROR")
+
+
+class TranslationError(DownloadError):
+    """文档翻译错误"""
+
+    def __init__(self, message: str):
+        super().__init__(message, "TRANSLATION_ERROR")

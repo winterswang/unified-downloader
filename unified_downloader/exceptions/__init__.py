@@ -17,6 +17,7 @@ from unified_downloader.exceptions.errors import (
     DataSourceError,
     UnsupportedOperationError,
     ConversionError,
+    TranslationError,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "DataSourceError",
     "UnsupportedOperationError",
     "ConversionError",
+    "TranslationError",
 ]

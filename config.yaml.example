@@ -1,0 +1,20 @@
+# unified-downloader 配置文件示例
+# 复制为 config.yaml 并填入实际值
+
+# 下载配置
+download:
+  download_dir: downloads
+  cache_enabled: true
+  cache_ttl_days: 30
+  convert_to_pdf: false
+  keep_original_html: true
+
+# SEC EDGAR 配置
+sec_user_agent: "your-email@example.com"
+edgar_identity: "your-email@example.com"
+
+# 翻译配置 (BabelDOC + MiniMax M2.7)
+translate_api_key: "your-api-key-here"
+translate_model: "MiniMax-M2.7"
+translate_base_url: "https://api.minimaxi.com/v1"
+translate_qps: 4

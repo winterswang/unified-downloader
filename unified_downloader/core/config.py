@@ -66,6 +66,13 @@ class Config:
     sec_user_agent: Optional[str] = None
     edgar_identity: Optional[str] = None
 
+    # 翻译配置
+    translate_api_key: Optional[str] = None
+    translate_model: str = "MiniMax-M2.7"
+    translate_base_url: str = "https://api.minimaxi.com/v1"
+    translate_lang: Optional[str] = None
+    translate_qps: int = 4
+
     @classmethod
     def from_file(cls, path: Path | str) -> "Config":
         """从YAML文件加载配置"""
@@ -131,6 +138,11 @@ class Config:
             sec_api_key=data.get("sec_api_key"),
             sec_user_agent=data.get("sec_user_agent"),
             edgar_identity=data.get("edgar_identity"),
+            translate_api_key=data.get("translate_api_key"),
+            translate_model=data.get("translate_model", "MiniMax-M2.7"),
+            translate_base_url=data.get("translate_base_url", "https://api.minimaxi.com/v1"),
+            translate_lang=data.get("translate_lang"),
+            translate_qps=data.get("translate_qps", 4),
         )
 
     @classmethod

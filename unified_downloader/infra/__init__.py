@@ -12,6 +12,7 @@ from unified_downloader.infra.circuit_breaker import (
 from unified_downloader.infra.audit import AuditLogger
 from unified_downloader.infra.rate_limiter import RateLimiter
 from unified_downloader.infra.converter import HTMLToPDFConverter
+from unified_downloader.infra.translator import PDFTranslator
 
 __all__ = [
     "HTTPClient",
@@ -25,4 +26,5 @@ __all__ = [
     "AuditLogger",
     "RateLimiter",
     "HTMLToPDFConverter",
+    "PDFTranslator",
 ]

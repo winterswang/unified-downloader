@@ -12,9 +12,11 @@ from unified_downloader.models.entities import DownloadResult, DataSource
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
 from unified_downloader.infra.rate_limiter import RateLimiter
 from unified_downloader.infra.converter import HTMLToPDFConverter
+from unified_downloader.infra.translator import PDFTranslator
 from unified_downloader.exceptions import (
     NetworkError,
     ConversionError,
+    TranslationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,11 @@ class MStockAdapter(BaseStockAdapter):
         keep_original_html: bool = True,
         sec_user_agent: Optional[str] = None,
         edgar_identity: Optional[str] = None,
+        translate_lang: Optional[str] = None,
+        translate_api_key: Optional[str] = None,
+        translate_model: str = "MiniMax-M2.7",
+        translate_base_url: str = "https://api.minimaxi.com/v1",
+        translate_qps: int = 4,
     ):
         super().__init__(http_client, datasources)
         self._api_key = api_key or self._get_api_key()
@@ -53,6 +60,11 @@ class MStockAdapter(BaseStockAdapter):
         self._rate_limiter = RateLimiter(min_interval=rate_limit_interval)
         self._convert_to_pdf = convert_to_pdf
         self._keep_original_html = keep_original_html
+        self._translate_lang = translate_lang
+        self._translate_api_key = translate_api_key
+        self._translate_model = translate_model
+        self._translate_base_url = translate_base_url
+        self._translate_qps = translate_qps
 
     def _get_api_key(self) -> str:
         """获取SEC API Key"""
@@ -531,6 +543,7 @@ class MStockAdapter(BaseStockAdapter):
 
                 # HTML→PDF 转换
                 downloaded_path = Path(result["file_path"])
+                converted_to_pdf = False
                 if (
                     self._convert_to_pdf
                     and downloaded_path.suffix.lower() in (".html", ".htm")
@@ -542,28 +555,40 @@ class MStockAdapter(BaseStockAdapter):
                         )
                         result["file_path"] = str(pdf_path)
                         result["file_size"] = pdf_path.stat().st_size
-                        return DownloadResult(
-                            success=True,
-                            file_path=result["file_path"],
-                            file_size=result["file_size"],
-                            source=filing.get("source", "edgar"),
-                            converted_to_pdf=True,
-                            metadata={
-                                "ticker": ticker,
-                                "form_type": form_type,
-                                "filed_at": filed_at,
-                                "accession_no": filing.get("accessionNo")
-                                or filing.get("accession_number"),
-                            },
-                        )
+                        downloaded_path = pdf_path
+                        converted_to_pdf = True
                     except ConversionError as e:
                         logger.warning(f"PDF转换失败，保留原始HTML: {e}")
+
+                # PDF 翻译
+                translated = False
+                translated_file_path = None
+                if (
+                    self._translate_lang
+                    and downloaded_path.suffix.lower() == ".pdf"
+                ):
+                    try:
+                        translated_path = PDFTranslator.translate(
+                            downloaded_path,
+                            lang_out=self._translate_lang,
+                            api_key=self._translate_api_key,
+                            model=self._translate_model,
+                            base_url=self._translate_base_url,
+                            qps=self._translate_qps,
+                        )
+                        translated = True
+                        translated_file_path = str(translated_path)
+                    except TranslationError as e:
+                        logger.warning(f"PDF翻译失败，保留原始文件: {e}")
 
                 return DownloadResult(
                     success=True,
                     file_path=result["file_path"],
                     file_size=result["file_size"],
                     source=filing.get("source", "edgar"),
+                    converted_to_pdf=converted_to_pdf,
+                    translated=translated,
+                    translated_file_path=translated_file_path,
                     metadata={
                         "ticker": ticker,
                         "form_type": form_type,
@@ -704,6 +729,7 @@ class MStockAdapter(BaseStockAdapter):
 
             # HTML→PDF 转换
             downloaded_path = Path(result["file_path"])
+            converted_to_pdf = False
             if (
                 self._convert_to_pdf
                 and downloaded_path.suffix.lower() in (".html", ".htm")
@@ -715,21 +741,40 @@ class MStockAdapter(BaseStockAdapter):
                     )
                     result["file_path"] = str(pdf_path)
                     result["file_size"] = pdf_path.stat().st_size
-                    return DownloadResult(
-                        success=True,
-                        file_path=result["file_path"],
-                        file_size=result["file_size"],
-                        source=filing.get("source", "edgar"),
-                        converted_to_pdf=True,
-                    )
+                    downloaded_path = pdf_path
+                    converted_to_pdf = True
                 except ConversionError as e:
                     logger.warning(f"PDF转换失败，保留原始HTML: {e}")
+
+            # PDF 翻译
+            translated = False
+            translated_file_path = None
+            if (
+                self._translate_lang
+                and downloaded_path.suffix.lower() == ".pdf"
+            ):
+                try:
+                    translated_path = PDFTranslator.translate(
+                        downloaded_path,
+                        lang_out=self._translate_lang,
+                        api_key=self._translate_api_key,
+                        model=self._translate_model,
+                        base_url=self._translate_base_url,
+                        qps=self._translate_qps,
+                    )
+                    translated = True
+                    translated_file_path = str(translated_path)
+                except TranslationError as e:
+                    logger.warning(f"PDF翻译失败，保留原始文件: {e}")
 
             return DownloadResult(
                 success=True,
                 file_path=result["file_path"],
                 file_size=result["file_size"],
                 source=filing.get("source", "edgar"),
+                converted_to_pdf=converted_to_pdf,
+                translated=translated,
+                translated_file_path=translated_file_path,
             )
         except Exception as e:
             return DownloadResult(
