@@ -29,7 +29,12 @@ class CLIContext:
             if self.config_path:
                 cfg = Config.from_file(self.config_path)
             else:
-                cfg = Config()
+                # 自动加载项目根目录下的 config.yaml
+                default_config = Path("config.yaml")
+                if default_config.exists():
+                    cfg = Config.from_file(default_config)
+                else:
+                    cfg = Config()
             self.downloader = UnifiedDownloader(cfg)
 
 
@@ -81,6 +86,8 @@ def echo_result(result, verbose=False):
             click.echo(f"  来源: {result.source}")
         if result.cached:
             click.echo(click.style("  (来自缓存)", fg="cyan"))
+        if result.converted_to_pdf:
+            click.echo(click.style("  (已转换为PDF)", fg="cyan"))
         if verbose and result.metadata:
             click.echo("  元数据:")
             for k, v in result.metadata.items():
@@ -226,9 +233,10 @@ def download_group():
 )
 @click.option("--output", "-o", type=click.Path(), help="输出目录")
 @click.option("--no-cache", is_flag=True, help="禁用缓存")
+@click.option("--pdf", is_flag=True, help="将HTML文件自动转换为PDF")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @ctx
-def download_single(cli_ctx, code, year, type, market, output, no_cache, verbose):
+def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, verbose):
     """下载单个文档"""
     downloader = cli_ctx.downloader
 
@@ -247,6 +255,7 @@ def download_single(cli_ctx, code, year, type, market, output, no_cache, verbose
         document_type=type,
         market=market_enum,
         use_cache=not no_cache,
+        convert_to_pdf=pdf if pdf else None,
     )
 
     echo_result(result, verbose=verbose)
@@ -317,8 +326,9 @@ def download_batch(cli_ctx, file, output, workers, errors, verbose):
     default="a",
     help="市场",
 )
+@click.option("--pdf", is_flag=True, help="将HTML文件自动转换为PDF")
 @ctx
-def download_demo(cli_ctx, market):
+def download_demo(cli_ctx, market, pdf):
     """下载示例文件（用于验证配置）"""
     demo_configs = {
         "a": {"code": "000001", "year": 2024, "type": "annual_report"},
@@ -339,6 +349,7 @@ def download_demo(cli_ctx, market):
         code=config["code"],
         year=config["year"],
         document_type=config["type"],
+        convert_to_pdf=pdf if pdf else None,
     )
 
     echo_result(result, verbose=True)

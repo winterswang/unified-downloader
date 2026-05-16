@@ -24,6 +24,7 @@ mcp = ">=1.0"
 akshare = ">=1.10"
 edgartools = ">=2.0"
 pandas = ">=1.5"
+weasyprint = ">=60.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"

@@ -67,7 +67,12 @@ class UnifiedDownloader:
                 self._http_client, self.config.get_datasources(Market.A)
             ),
             Market.M: MStockAdapter(
-                self._http_client, self.config.get_datasources(Market.M)
+                self._http_client,
+                self.config.get_datasources(Market.M),
+                convert_to_pdf=self.config.download.convert_to_pdf,
+                keep_original_html=self.config.download.keep_original_html,
+                sec_user_agent=self.config.sec_user_agent,
+                edgar_identity=self.config.edgar_identity,
             ),
             Market.H: HStockAdapter(
                 self._http_client, self.config.get_datasources(Market.H)
@@ -102,6 +107,7 @@ class UnifiedDownloader:
         document_type: str = "annual_report",
         market: Optional[Market] = None,
         use_cache: bool = True,
+        convert_to_pdf: Optional[bool] = None,
         on_progress: Optional[ProgressCallbackType] = None,
         **kwargs,
     ) -> DownloadResult:
@@ -114,6 +120,7 @@ class UnifiedDownloader:
             document_type: 文档类型 (annual_report, interim_report, prospectus, 10k, s1)
             market: 市场类型，None表示自动识别
             use_cache: 是否使用缓存
+            convert_to_pdf: 是否将HTML转为PDF，None使用配置默认值
             on_progress: 进度回调函数
             **kwargs: 其他参数
 
@@ -185,6 +192,10 @@ class UnifiedDownloader:
         adapter = self._adapters.get(market)
         if not adapter:
             raise MarketUnrecognizedError(code)
+
+        # 临时覆盖 PDF 转换设置
+        if convert_to_pdf is not None and market == Market.M:
+            adapter._convert_to_pdf = convert_to_pdf  # type: ignore[attr-defined]
 
         # 执行下载
         self._log_event(

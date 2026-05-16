@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
 from unified_downloader.adapters.base import BaseStockAdapter
@@ -10,8 +11,10 @@ from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
 from unified_downloader.infra.rate_limiter import RateLimiter
+from unified_downloader.infra.converter import HTMLToPDFConverter
 from unified_downloader.exceptions import (
     NetworkError,
+    ConversionError,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,12 +40,19 @@ class MStockAdapter(BaseStockAdapter):
         datasources: List[Dict],
         api_key: Optional[str] = None,
         rate_limit_interval: float = 5.0,
+        convert_to_pdf: bool = False,
+        keep_original_html: bool = True,
+        sec_user_agent: Optional[str] = None,
+        edgar_identity: Optional[str] = None,
     ):
         super().__init__(http_client, datasources)
         self._api_key = api_key or self._get_api_key()
         self._ticker_cache: Dict[str, str] = {}
-        self._edgar_identity: Optional[str] = None
+        self._edgar_identity = edgar_identity
+        self._sec_user_agent = sec_user_agent
         self._rate_limiter = RateLimiter(min_interval=rate_limit_interval)
+        self._convert_to_pdf = convert_to_pdf
+        self._keep_original_html = keep_original_html
 
     def _get_api_key(self) -> str:
         """获取SEC API Key"""
@@ -57,8 +67,15 @@ class MStockAdapter(BaseStockAdapter):
         return api_key
 
     def _get_edgar_identity(self) -> str:
-        """获取EDGAR Identity (邮箱)"""
+        """获取EDGAR Identity (邮箱)，优先级: 构造参数 > 配置文件 > 环境变量 > 默认值"""
         if self._edgar_identity:
+            return self._edgar_identity
+
+        # 尝试从配置文件读取
+        from unified_downloader.core.config import get_default_config
+        cfg = get_default_config()
+        if cfg.edgar_identity:
+            self._edgar_identity = cfg.edgar_identity
             return self._edgar_identity
 
         identity = os.environ.get(
@@ -483,10 +500,15 @@ class MStockAdapter(BaseStockAdapter):
             ticker, file_year, form_type.replace("-", ""), ext
         )
 
-        # SEC要求特定User-Agent头
-        sec_ua = os.environ.get(
-            "SEC_USER_AGENT", "UnifiedDownloader/1.0 (Financial Document Downloader)"
-        )
+        # SEC要求特定User-Agent头，优先级: 构造参数 > 配置文件 > 环境变量 > 默认值
+        if self._sec_user_agent:
+            sec_ua = self._sec_user_agent
+        else:
+            from unified_downloader.core.config import get_default_config
+            cfg = get_default_config()
+            sec_ua = cfg.sec_user_agent or os.environ.get(
+                "SEC_USER_AGENT", "UnifiedDownloader/1.0 (Financial Document Downloader)"
+            )
         headers = {
             "User-Agent": sec_ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -506,6 +528,36 @@ class MStockAdapter(BaseStockAdapter):
                     checkpoint=checkpoint,
                     headers=headers,
                 )
+
+                # HTML→PDF 转换
+                downloaded_path = Path(result["file_path"])
+                if (
+                    self._convert_to_pdf
+                    and downloaded_path.suffix.lower() in (".html", ".htm")
+                ):
+                    try:
+                        pdf_path = HTMLToPDFConverter.convert(
+                            downloaded_path,
+                            keep_original=self._keep_original_html,
+                        )
+                        result["file_path"] = str(pdf_path)
+                        result["file_size"] = pdf_path.stat().st_size
+                        return DownloadResult(
+                            success=True,
+                            file_path=result["file_path"],
+                            file_size=result["file_size"],
+                            source=filing.get("source", "edgar"),
+                            converted_to_pdf=True,
+                            metadata={
+                                "ticker": ticker,
+                                "form_type": form_type,
+                                "filed_at": filed_at,
+                                "accession_no": filing.get("accessionNo")
+                                or filing.get("accession_number"),
+                            },
+                        )
+                    except ConversionError as e:
+                        logger.warning(f"PDF转换失败，保留原始HTML: {e}")
 
                 return DownloadResult(
                     success=True,
@@ -649,6 +701,30 @@ class MStockAdapter(BaseStockAdapter):
             result = await http_client.download_file(
                 link, file_path, on_progress=on_progress, checkpoint=checkpoint
             )
+
+            # HTML→PDF 转换
+            downloaded_path = Path(result["file_path"])
+            if (
+                self._convert_to_pdf
+                and downloaded_path.suffix.lower() in (".html", ".htm")
+            ):
+                try:
+                    pdf_path = HTMLToPDFConverter.convert(
+                        downloaded_path,
+                        keep_original=self._keep_original_html,
+                    )
+                    result["file_path"] = str(pdf_path)
+                    result["file_size"] = pdf_path.stat().st_size
+                    return DownloadResult(
+                        success=True,
+                        file_path=result["file_path"],
+                        file_size=result["file_size"],
+                        source=filing.get("source", "edgar"),
+                        converted_to_pdf=True,
+                    )
+                except ConversionError as e:
+                    logger.warning(f"PDF转换失败，保留原始HTML: {e}")
+
             return DownloadResult(
                 success=True,
                 file_path=result["file_path"],

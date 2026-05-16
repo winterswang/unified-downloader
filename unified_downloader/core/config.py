@@ -34,6 +34,8 @@ class DownloadConfig:
     cache_enabled: bool = True
     cache_ttl_days: int = 30
     cache_max_size_gb: float = 10.0
+    convert_to_pdf: bool = False
+    keep_original_html: bool = True
 
 
 @dataclass
@@ -61,6 +63,8 @@ class Config:
 
     # SEC API配置
     sec_api_key: Optional[str] = None
+    sec_user_agent: Optional[str] = None
+    edgar_identity: Optional[str] = None
 
     @classmethod
     def from_file(cls, path: Path | str) -> "Config":
@@ -103,6 +107,8 @@ class Config:
             cache_enabled=download_data.get("cache_enabled", True),
             cache_ttl_days=download_data.get("cache_ttl_days", 30),
             cache_max_size_gb=download_data.get("cache_max_size_gb", 10.0),
+            convert_to_pdf=download_data.get("convert_to_pdf", False),
+            keep_original_html=download_data.get("keep_original_html", True),
         )
 
         # 解析熔断器配置
@@ -122,6 +128,9 @@ class Config:
             audit_enabled=data.get("audit_enabled", True),
             cache_dir=Path(data.get("cache_dir", "data/cache")),
             checkpoint_dir=Path(data.get("checkpoint_dir", "data/checkpoint")),
+            sec_api_key=data.get("sec_api_key"),
+            sec_user_agent=data.get("sec_user_agent"),
+            edgar_identity=data.get("edgar_identity"),
         )
 
     @classmethod

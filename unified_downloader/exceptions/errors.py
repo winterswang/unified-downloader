@@ -111,3 +111,10 @@ class UnsupportedOperationError(DownloadError):
 
     def __init__(self, message: str):
         super().__init__(message, "UNSUPPORTED_OPERATION")
+
+
+class ConversionError(DownloadError):
+    """文件格式转换错误"""
+
+    def __init__(self, message: str):
+        super().__init__(message, "CONVERSION_ERROR")

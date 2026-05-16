@@ -19,6 +19,7 @@ class DownloadResult:
     error_message: Optional[str] = None
     duration_ms: Optional[int] = None
     cached: bool = False
+    converted_to_pdf: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
