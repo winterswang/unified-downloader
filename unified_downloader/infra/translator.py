@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -67,8 +68,14 @@ class PDFTranslator:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # 构建 babeldoc 命令
-        cmd = [
-            "babeldoc",
+        # 使用 wrapper 脚本剥离推理模型输出中的 </think> 思考标签
+        wrapper_path = Path(__file__).parent / "_babeldoc_wrapper.py"
+        if wrapper_path.exists():
+            babeldoc_cmd = [sys.executable, str(wrapper_path)]
+        else:
+            babeldoc_cmd = ["babeldoc"]
+
+        cmd = babeldoc_cmd + [
             "--files", str(pdf_path),
             "--openai",
             "--openai-model", model,
@@ -78,10 +85,15 @@ class PDFTranslator:
             "--lang-out", lang_out,
             "--output", str(output_dir),
             "--qps", str(qps),
+            "--enhance-compatibility",
+            "--no-auto-extract-glossary",
         ]
 
         if no_dual:
             cmd.append("--no-dual")
+
+        # 忽略翻译缓存，避免使用之前含思考标签的缓存结果
+        cmd.append("--ignore-cache")
 
         logger.info(f"开始翻译: {pdf_path.name} ({lang_in}→{lang_out})")
 
