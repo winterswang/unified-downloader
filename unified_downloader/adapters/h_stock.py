@@ -28,7 +28,15 @@ class HKExAPI:
     ANNUAL_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13300"}
     INTERIM_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13400"}
     QUARTERLY_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13600"}
-    IPO_PROSPECTUS = {"t1code": "91000", "t2Gcode": "-2", "t2code": "91200"}
+    # 未上市申请人招股书 (Application Proof) - t1code=91000 在 titleSearchServlet 中
+    # 对已上市公司无效，仅用于 AP/PHIP 阶段
+    IPO_PROSPECTUS_AP = {"t1code": "91000", "t2Gcode": "-2", "t2code": "91200"}
+    # 已上市公司招股书：标题为"全球发售"，分类为空
+    LISTED_PROSPECTUS = {"t1code": "-2", "t2Gcode": "-2", "t2code": "-2"}
+
+    # 招股书搜索关键词（中英文）
+    PROSPECTUS_TITLE_ZH = "全球發售"
+    PROSPECTUS_TITLE_EN = "Global Offering"
 
     def __init__(self, http_client: HTTPClient):
         self._http = http_client
@@ -302,10 +310,168 @@ class HStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载招股说明书"""
-        return self._download_report(
-            code, None, "prospectus", HKExAPI.IPO_PROSPECTUS, checkpoint, on_progress
+        """下载招股说明书
+
+        搜索策略：
+        1. 先通过 prefix.do 获取 stockId，用"全球发售"标题搜索已上市公司招股书
+        2. 若 stockId 找不到（未上市公司），用 stockId=-1 + 代码标题搜索
+        3. 搜索范围扩大到5年，因为招股书通常在上市前发布
+        """
+        stock_code = code.upper().zfill(5)
+
+        # 策略1: 已上市公司 - 用 stockId + "全球发售"标题搜索
+        stock_id = self._get_stock_id(stock_code)
+        if stock_id:
+            # 搜索范围10年（港股招股书可能在上市前发布，上市年份可能较早）
+            to_date = date.today()
+            from_date = date(to_date.year - 10, to_date.month, to_date.day)
+
+            self._rate_limiter.wait()
+            api = self._get_api()
+            # 已上市公司招股书：标题"全球发售"，分类为空
+            documents = api.search_documents(
+                from_date=from_date,
+                to_date=to_date,
+                stock_id=stock_id,
+                doc_type=HKExAPI.LISTED_PROSPECTUS,
+                title=HKExAPI.PROSPECTUS_TITLE_ZH,
+            )
+
+            # 过滤：只取 PDF 文件
+            documents = [d for d in documents if d.get("file_link", "").lower().endswith(".pdf")]
+
+            if documents:
+                # 优先选择标题最直接匹配的（标题越短越可能是主招股书）
+                # 排除分拆/附属公司招股书（标题含"分拆"、"附屬"等）
+                primary_docs = [
+                    d for d in documents
+                    if not any(kw in d.get("title", "") for kw in ["分拆", "分立", "附屬", "SPIN"])
+                ]
+                candidates = primary_docs if primary_docs else documents
+                # 在候选中选最大的文件（通常是完整招股书）
+                doc = max(candidates, key=lambda d: self._parse_file_size(d.get("file_info", "")))
+                return self._download_from_doc(doc, stock_code, "prospectus", checkpoint, on_progress)
+
+        # 策略2: 未上市公司或策略1未找到 - 用 stockId=-1 + 代码/名称搜索
+        to_date = date.today()
+        from_date = date(to_date.year - 10, to_date.month, to_date.day)
+
+        self._rate_limiter.wait()
+        api = self._get_api()
+        # 用股票代码作为标题关键词搜索
+        documents = api.search_documents(
+            from_date=from_date,
+            to_date=to_date,
+            stock_id="-1",
+            doc_type=HKExAPI.LISTED_PROSPECTUS,
+            title=stock_code,
         )
+
+        # 也尝试用 AP 分类搜索
+        self._rate_limiter.wait()
+        ap_docs = api.search_documents(
+            from_date=from_date,
+            to_date=to_date,
+            stock_id="-1",
+            doc_type=HKExAPI.IPO_PROSPECTUS_AP,
+            title=stock_code,
+        )
+        documents.extend(ap_docs)
+
+        # 过滤：只取 PDF，且股票代码匹配
+        documents = [
+            d for d in documents
+            if d.get("file_link", "").lower().endswith(".pdf")
+            and stock_code in d.get("stock_code", "").replace("<br/>", " ")
+        ]
+
+        if documents:
+            doc = max(documents, key=lambda d: self._parse_file_size(d.get("file_info", "")))
+            return self._download_from_doc(doc, stock_code, "prospectus", checkpoint, on_progress)
+
+        return DownloadResult(
+            success=False,
+            error_code="NO_FILINGS_FOUND",
+            error_message=f"未找到 {stock_code} 的招股书（该股票可能未在港交所上市或提交招股书）",
+        )
+
+    @staticmethod
+    def _parse_file_size(file_info: str) -> float:
+        """解析文件大小字符串（如 '4MB', '284KB'）为 KB 数"""
+        try:
+            file_info = file_info.upper().strip()
+            if "MB" in file_info:
+                return float(re.sub(r"[^0-9.]", "", file_info)) * 1024
+            elif "KB" in file_info:
+                return float(re.sub(r"[^0-9.]", "", file_info))
+            elif "GB" in file_info:
+                return float(re.sub(r"[^0-9.]", "", file_info)) * 1024 * 1024
+        except (ValueError, TypeError):
+            pass
+        return 0.0
+
+    def _download_from_doc(
+        self,
+        doc: Dict[str, Any],
+        stock_code: str,
+        doc_type_name: str,
+        checkpoint: Optional[Dict[str, Any]],
+        on_progress: Optional[Callable],
+    ) -> DownloadResult:
+        """从搜索结果文档下载文件"""
+        file_link = doc.get("file_link", "")
+        if not file_link:
+            return DownloadResult(
+                success=False,
+                error_code="URL_NOT_FOUND",
+                error_message="无法获取文档链接",
+            )
+
+        ext = ".pdf" if file_link.lower().endswith(".pdf") else ".html"
+
+        # 解析年份
+        file_year = None
+        try:
+            dt = datetime.strptime(doc.get("date_time", ""), "%d/%m/%Y %H:%M")
+            file_year = dt.year
+        except (ValueError, TypeError):
+            file_year = date.today().year
+
+        file_path = self._build_file_path(
+            stock_code, file_year, doc_type_name.upper(), ext
+        )
+
+        try:
+            if file_link.startswith("http"):
+                url = file_link
+            else:
+                url = f"{HKExAPI.BASE_URL}{file_link}"
+
+            result = self._http_client.download_file(
+                url, file_path, on_progress=on_progress, checkpoint=checkpoint
+            )
+
+            return DownloadResult(
+                success=True,
+                file_path=result["file_path"],
+                file_size=result["file_size"],
+                source="hkex",
+                metadata={
+                    "ticker": stock_code,
+                    "stock_name": doc.get("stock_name", ""),
+                    "title": doc.get("title", ""),
+                    "doc_type": doc_type_name,
+                    "date_time": doc.get("date_time", ""),
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"下载失败: {e}")
+            return DownloadResult(
+                success=False,
+                error_code="DOWNLOAD_ERROR",
+                error_message=f"下载失败: {e}",
+            )
 
     def _download_report(
         self,
@@ -438,7 +604,23 @@ class HStockAdapter(BaseStockAdapter):
             elif "quarterly" in doc_type_lower or "季度" in doc_type_lower:
                 doc_type_config = HKExAPI.QUARTERLY_RESULTS
             elif "prospectus" in doc_type_lower or "招股" in doc_type_lower:
-                doc_type_config = HKExAPI.IPO_PROSPECTUS
+                # 招股书搜索：扩大时间范围到10年
+                if not year:
+                    to_date = date.today()
+                    from_date = date(to_date.year - 10, to_date.month, to_date.day)
+
+                self._rate_limiter.wait()
+                api = self._get_api()
+                # 已上市公司招股书用"全球发售"标题搜索
+                docs = api.search_documents(
+                    from_date=from_date,
+                    to_date=to_date,
+                    stock_id=stock_id,
+                    doc_type=HKExAPI.LISTED_PROSPECTUS,
+                    title=HKExAPI.PROSPECTUS_TITLE_ZH,
+                )
+                # 过滤 PDF
+                return [d for d in docs if d.get("file_link", "").lower().endswith(".pdf")]
 
         self._rate_limiter.wait()
         api = self._get_api()
