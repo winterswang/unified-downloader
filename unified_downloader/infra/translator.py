@@ -50,11 +50,9 @@ class PDFTranslator:
         if not pdf_path.exists():
             raise TranslationError(f"PDF文件不存在: {pdf_path}")
 
-        # API Key 优先级: 参数 > 配置文件 > 环境变量
+        # API Key: 由调用方从已加载的 config 传入，或从环境变量 fallback
         if not api_key:
-            from unified_downloader.core.config import get_default_config
-            cfg = get_default_config()
-            api_key = cfg.translate_api_key or os.environ.get("OPENAI_API_KEY", "")
+            api_key = os.environ.get("OPENAI_API_KEY", "")
 
         if not api_key:
             raise TranslationError(

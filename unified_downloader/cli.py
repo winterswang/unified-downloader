@@ -250,6 +250,13 @@ def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, tr
 
     market_enum = Market(market) if market != "auto" else None
 
+    # 翻译仅支持美股，提前警告
+    if translate and market_enum and market_enum != Market.M:
+        click.echo(click.style(
+            f"⚠ 翻译功能仅支持美股，当前市场 {market} 将跳过翻译",
+            fg="yellow",
+        ))
+
     click.echo(f"正在下载 {code} {year or '(最新)'} {type}...")
 
     result = downloader.download(

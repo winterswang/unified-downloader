@@ -1,5 +1,6 @@
 """统一下载器"""
 
+import logging
 import re
 import time
 from typing import Optional, List, Dict, Any, Callable
@@ -33,6 +34,9 @@ from unified_downloader.exceptions import (
     MarketUnrecognizedError,
     CircuitBreakerOpenError,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiedDownloader:
@@ -205,8 +209,13 @@ class UnifiedDownloader:
             adapter._convert_to_pdf = convert_to_pdf  # type: ignore[attr-defined]
 
         # 临时覆盖翻译设置
-        if translate is not None and market == Market.M:
-            adapter._translate_lang = translate  # type: ignore[attr-defined]
+        if translate is not None:
+            if market == Market.M:
+                adapter._translate_lang = translate  # type: ignore[attr-defined]
+            else:
+                logger.warning(
+                    f"翻译功能仅支持美股，当前市场 {market.value} 将跳过翻译"
+                )
 
         # 执行下载
         self._log_event(
