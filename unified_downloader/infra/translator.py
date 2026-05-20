@@ -4,14 +4,19 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 from unified_downloader.exceptions import TranslationError
 
 logger = logging.getLogger(__name__)
+
+# 匹配 BabelDOC stdout 中的输出文件路径
+_OUTPUT_PATH_PATTERN = re.compile(r"(?:Output|output|saved|Saved)\s+(?:to\s+)?[:=]?\s*(.+\.pdf)", re.IGNORECASE)
 
 
 def _file_hash(path: Path) -> str:
@@ -127,6 +132,7 @@ class PDFTranslator:
         cmd.append("--ignore-cache")
 
         logger.info(f"开始翻译: {pdf_path.name} (en→{target_lang})")
+        translate_start_time = time.time()
 
         try:
             result = subprocess.run(
@@ -140,24 +146,32 @@ class PDFTranslator:
                 error_msg = result.stderr.strip() or result.stdout.strip()
                 raise TranslationError(f"BabelDOC翻译失败 (exit {result.returncode}): {error_msg}")
 
-            # 查找翻译输出文件
-            # BabelDOC 输出命名: {stem}.{target_lang}.mono.pdf (no-dual) 或 {stem}.{target_lang}.pdf
-            stem = pdf_path.stem
-            suffix = pdf_path.suffix
-
-            # 可能的输出文件名
-            candidates = [
-                output_dir / f"{stem}.{target_lang}.mono{suffix}",
-                output_dir / f"{stem}.{target_lang}{suffix}",
-            ]
-
+            # 查找翻译输出文件 — 3 层策略
             translated_path = None
-            for candidate in candidates:
-                if candidate.exists():
-                    translated_path = candidate
-                    break
 
-            # 如果以上都不匹配，查找输出目录中最近生成的 PDF
+            # 策略1: 解析 BabelDOC stdout 提取输出路径
+            for line in result.stdout.splitlines():
+                m = _OUTPUT_PATH_PATTERN.search(line)
+                if m:
+                    parsed = Path(m.group(1).strip())
+                    if parsed.exists():
+                        translated_path = parsed
+                        break
+
+            # 策略2: 按文件名模式匹配
+            if translated_path is None:
+                stem = pdf_path.stem
+                suffix = pdf_path.suffix
+                candidates = [
+                    output_dir / f"{stem}.{target_lang}.mono{suffix}",
+                    output_dir / f"{stem}.{target_lang}{suffix}",
+                ]
+                for candidate in candidates:
+                    if candidate.exists():
+                        translated_path = candidate
+                        break
+
+            # 策略3: 按时间窗口 + 目标语言匹配（避免误匹配旧文件）
             if translated_path is None:
                 pdf_files = sorted(
                     output_dir.glob("*.pdf"),
@@ -165,7 +179,9 @@ class PDFTranslator:
                     reverse=True,
                 )
                 for f in pdf_files:
-                    if f != pdf_path and target_lang in f.name:
+                    if (f != pdf_path
+                            and target_lang in f.name
+                            and f.stat().st_mtime >= translate_start_time - 1):
                         translated_path = f
                         break
 
