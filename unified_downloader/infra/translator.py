@@ -1,5 +1,7 @@
 """PDF 翻译器 - 调用 BabelDOC CLI 进行文档翻译"""
 
+import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -10,6 +12,15 @@ from typing import Optional
 from unified_downloader.exceptions import TranslationError
 
 logger = logging.getLogger(__name__)
+
+
+def _file_hash(path: Path) -> str:
+    """计算文件的 MD5 哈希（用于翻译缓存校验）"""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class PDFTranslator:
@@ -25,6 +36,7 @@ class PDFTranslator:
         qps: int = 4,
         no_dual: bool = True,
         output_dir: Optional[Path] = None,
+        use_cache: bool = True,
     ) -> Path:
         """
         翻译 PDF 文件 (英文 → 目标语言)
@@ -38,6 +50,7 @@ class PDFTranslator:
             qps: 每秒请求数限制
             no_dual: 是否仅输出目标语言版（不输出双语版）
             output_dir: 输出目录，None 则与输入同目录
+            use_cache: 是否使用翻译缓存，避免重复翻译
 
         Returns:
             翻译后的 PDF 文件路径
@@ -62,6 +75,28 @@ class PDFTranslator:
             output_dir = pdf_path.parent
 
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 翻译缓存检查
+        cache_key = {
+            "source": str(pdf_path),
+            "hash": _file_hash(pdf_path),
+            "lang": target_lang,
+            "model": model,
+        }
+        marker_path = output_dir / f"{pdf_path.stem}.{target_lang}.translated"
+
+        if use_cache and marker_path.exists():
+            try:
+                cached = json.loads(marker_path.read_text(encoding="utf-8"))
+                if (cached.get("hash") == cache_key["hash"]
+                        and cached.get("lang") == cache_key["lang"]
+                        and cached.get("model") == cache_key["model"]):
+                    cached_path = Path(cached["output"])
+                    if cached_path.exists():
+                        logger.info(f"翻译缓存命中: {cached_path}")
+                        return cached_path
+            except (json.JSONDecodeError, KeyError):
+                pass  # 缓存文件损坏，重新翻译
 
         # 构建 babeldoc 命令
         # 使用 wrapper 脚本剥离推理模型输出中的 </think> 思考标签
@@ -88,7 +123,7 @@ class PDFTranslator:
         if no_dual:
             cmd.append("--no-dual")
 
-        # 忽略翻译缓存，避免使用之前含思考标签的缓存结果
+        # 忽略 BabelDOC 内部缓存，使用自己的翻译缓存机制
         cmd.append("--ignore-cache")
 
         logger.info(f"开始翻译: {pdf_path.name} (en→{target_lang})")
@@ -136,6 +171,12 @@ class PDFTranslator:
 
             if translated_path is None or not translated_path.exists():
                 raise TranslationError(f"翻译输出文件未找到，输出目录: {output_dir}")
+
+            # 写入翻译缓存标记
+            marker_path.write_text(
+                json.dumps({**cache_key, "output": str(translated_path)}, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
             logger.info(f"翻译完成: {translated_path}")
             return translated_path

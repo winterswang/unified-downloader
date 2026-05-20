@@ -208,6 +208,10 @@ class UnifiedDownloader:
         if convert_to_pdf is not None and market == Market.M:
             adapter._convert_to_pdf = convert_to_pdf  # type: ignore[attr-defined]
 
+        # --no-cache 同时跳过翻译缓存
+        if not use_cache and market == Market.M:
+            adapter._use_translate_cache = False  # type: ignore[attr-defined]
+
         # 临时覆盖翻译设置
         if translate is not None:
             if market == Market.M:

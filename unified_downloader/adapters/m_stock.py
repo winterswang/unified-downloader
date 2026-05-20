@@ -65,6 +65,7 @@ class MStockAdapter(BaseStockAdapter):
         self._translate_model = translate_model
         self._translate_base_url = translate_base_url
         self._translate_qps = translate_qps
+        self._use_translate_cache = True
 
     def _get_api_key(self) -> str:
         """获取SEC API Key"""
@@ -574,6 +575,7 @@ class MStockAdapter(BaseStockAdapter):
                             model=self._translate_model,
                             base_url=self._translate_base_url,
                             qps=self._translate_qps,
+                            use_cache=self._use_translate_cache,
                         )
                         translated = True
                         translated_file_path = str(translated_path)
@@ -759,6 +761,7 @@ class MStockAdapter(BaseStockAdapter):
                         model=self._translate_model,
                         base_url=self._translate_base_url,
                         qps=self._translate_qps,
+                        use_cache=self._use_translate_cache,
                     )
                     translated = True
                     translated_file_path = str(translated_path)
