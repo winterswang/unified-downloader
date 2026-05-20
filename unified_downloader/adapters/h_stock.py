@@ -605,13 +605,12 @@ class HStockAdapter(BaseStockAdapter):
                 doc_type_config = HKExAPI.QUARTERLY_RESULTS
             elif "prospectus" in doc_type_lower or "招股" in doc_type_lower:
                 # 招股书搜索：扩大时间范围到10年
-                if not year:
-                    to_date = date.today()
-                    from_date = date(to_date.year - 10, to_date.month, to_date.day)
+                to_date = date.today()
+                from_date = date(to_date.year - 10, to_date.month, to_date.day)
 
+                # 策略1: 已上市公司招股书用"全球发售"标题搜索
                 self._rate_limiter.wait()
                 api = self._get_api()
-                # 已上市公司招股书用"全球发售"标题搜索
                 docs = api.search_documents(
                     from_date=from_date,
                     to_date=to_date,
@@ -619,8 +618,30 @@ class HStockAdapter(BaseStockAdapter):
                     doc_type=HKExAPI.LISTED_PROSPECTUS,
                     title=HKExAPI.PROSPECTUS_TITLE_ZH,
                 )
+
+                # 策略2: AP分类兜底（未上市公司或策略1未找到）
+                if not docs:
+                    self._rate_limiter.wait()
+                    ap_docs = api.search_documents(
+                        from_date=from_date,
+                        to_date=to_date,
+                        stock_id="-1",
+                        doc_type=HKExAPI.IPO_PROSPECTUS_AP,
+                        title=code.upper().zfill(5),
+                    )
+                    docs.extend(ap_docs)
+
                 # 过滤 PDF
-                return [d for d in docs if d.get("file_link", "").lower().endswith(".pdf")]
+                results = [d for d in docs if d.get("file_link", "").lower().endswith(".pdf")]
+
+                # 如果指定了年份，过滤结果
+                if year and results:
+                    results = [
+                        d for d in results
+                        if str(year) in (d.get("date_time", "") or d.get("title", ""))
+                    ]
+
+                return results
 
         self._rate_limiter.wait()
         api = self._get_api()
