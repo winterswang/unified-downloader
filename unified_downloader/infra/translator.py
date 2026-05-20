@@ -18,8 +18,7 @@ class PDFTranslator:
     @staticmethod
     def translate(
         pdf_path: Path,
-        lang_out: str = "zh",
-        lang_in: str = "en",
+        target_lang: str = "zh",
         api_key: Optional[str] = None,
         model: str = "MiniMax-M2.7",
         base_url: str = "https://api.minimaxi.com/v1",
@@ -28,12 +27,11 @@ class PDFTranslator:
         output_dir: Optional[Path] = None,
     ) -> Path:
         """
-        翻译 PDF 文件
+        翻译 PDF 文件 (英文 → 目标语言)
 
         Args:
             pdf_path: 输入 PDF 文件路径
-            lang_out: 目标语言代码 (如 "zh")
-            lang_in: 源语言代码 (如 "en")
+            target_lang: 目标语言代码 (默认 "zh")
             api_key: 翻译 API Key
             model: 翻译模型名称
             base_url: 翻译 API Base URL
@@ -79,8 +77,8 @@ class PDFTranslator:
             "--openai-model", model,
             "--openai-base-url", base_url,
             "--openai-api-key", api_key,
-            "--lang-in", lang_in,
-            "--lang-out", lang_out,
+            "--lang-in", "en",
+            "--lang-out", target_lang,
             "--output", str(output_dir),
             "--qps", str(qps),
             "--enhance-compatibility",
@@ -93,7 +91,7 @@ class PDFTranslator:
         # 忽略翻译缓存，避免使用之前含思考标签的缓存结果
         cmd.append("--ignore-cache")
 
-        logger.info(f"开始翻译: {pdf_path.name} ({lang_in}→{lang_out})")
+        logger.info(f"开始翻译: {pdf_path.name} (en→{target_lang})")
 
         try:
             result = subprocess.run(
@@ -108,17 +106,14 @@ class PDFTranslator:
                 raise TranslationError(f"BabelDOC翻译失败 (exit {result.returncode}): {error_msg}")
 
             # 查找翻译输出文件
-            # BabelDOC 输出命名: {stem}.{lang_out}.mono.pdf (no-dual) 或 {stem}.{lang_out}.pdf
+            # BabelDOC 输出命名: {stem}.{target_lang}.mono.pdf (no-dual) 或 {stem}.{target_lang}.pdf
             stem = pdf_path.stem
             suffix = pdf_path.suffix
 
             # 可能的输出文件名
             candidates = [
-                output_dir / f"{stem}.{lang_out}.mono{suffix}",
-                output_dir / f"{stem}.{lang_out}{suffix}",
-                output_dir / f"{stem}{lang_out}{suffix}",
-                output_dir / f"{stem}-{lang_out}{suffix}",
-                output_dir / f"{stem}-mono{suffix}",
+                output_dir / f"{stem}.{target_lang}.mono{suffix}",
+                output_dir / f"{stem}.{target_lang}{suffix}",
             ]
 
             translated_path = None
@@ -135,7 +130,7 @@ class PDFTranslator:
                     reverse=True,
                 )
                 for f in pdf_files:
-                    if f != pdf_path and lang_out in f.name:
+                    if f != pdf_path and target_lang in f.name:
                         translated_path = f
                         break
 

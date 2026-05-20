@@ -66,11 +66,11 @@ class Config:
     sec_user_agent: Optional[str] = None
     edgar_identity: Optional[str] = None
 
-    # 翻译配置
+    # 翻译配置 (英文→中文)
     translate_api_key: Optional[str] = None
     translate_model: str = "MiniMax-M2.7"
     translate_base_url: str = "https://api.minimaxi.com/v1"
-    translate_lang: Optional[str] = None
+    translate_enabled: bool = False
     translate_qps: int = 4
 
     @classmethod
@@ -141,7 +141,7 @@ class Config:
             translate_api_key=data.get("translate_api_key"),
             translate_model=data.get("translate_model", "MiniMax-M2.7"),
             translate_base_url=data.get("translate_base_url", "https://api.minimaxi.com/v1"),
-            translate_lang=data.get("translate_lang"),
+            translate_enabled=data.get("translate_enabled", False),
             translate_qps=data.get("translate_qps", 4),
         )
 

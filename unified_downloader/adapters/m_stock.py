@@ -46,7 +46,7 @@ class MStockAdapter(BaseStockAdapter):
         keep_original_html: bool = True,
         sec_user_agent: Optional[str] = None,
         edgar_identity: Optional[str] = None,
-        translate_lang: Optional[str] = None,
+        translate_enabled: bool = False,
         translate_api_key: Optional[str] = None,
         translate_model: str = "MiniMax-M2.7",
         translate_base_url: str = "https://api.minimaxi.com/v1",
@@ -60,7 +60,7 @@ class MStockAdapter(BaseStockAdapter):
         self._rate_limiter = RateLimiter(min_interval=rate_limit_interval)
         self._convert_to_pdf = convert_to_pdf
         self._keep_original_html = keep_original_html
-        self._translate_lang = translate_lang
+        self._translate_enabled = translate_enabled
         self._translate_api_key = translate_api_key
         self._translate_model = translate_model
         self._translate_base_url = translate_base_url
@@ -564,13 +564,12 @@ class MStockAdapter(BaseStockAdapter):
                 translated = False
                 translated_file_path = None
                 if (
-                    self._translate_lang
+                    self._translate_enabled
                     and downloaded_path.suffix.lower() == ".pdf"
                 ):
                     try:
                         translated_path = PDFTranslator.translate(
                             downloaded_path,
-                            lang_out=self._translate_lang,
                             api_key=self._translate_api_key,
                             model=self._translate_model,
                             base_url=self._translate_base_url,
@@ -750,13 +749,12 @@ class MStockAdapter(BaseStockAdapter):
             translated = False
             translated_file_path = None
             if (
-                self._translate_lang
+                self._translate_enabled
                 and downloaded_path.suffix.lower() == ".pdf"
             ):
                 try:
                     translated_path = PDFTranslator.translate(
                         downloaded_path,
-                        lang_out=self._translate_lang,
                         api_key=self._translate_api_key,
                         model=self._translate_model,
                         base_url=self._translate_base_url,

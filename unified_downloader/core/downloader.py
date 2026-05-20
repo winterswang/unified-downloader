@@ -77,7 +77,7 @@ class UnifiedDownloader:
                 keep_original_html=self.config.download.keep_original_html,
                 sec_user_agent=self.config.sec_user_agent,
                 edgar_identity=self.config.edgar_identity,
-                translate_lang=self.config.translate_lang,
+                translate_enabled=self.config.translate_enabled,
                 translate_api_key=self.config.translate_api_key,
                 translate_model=self.config.translate_model,
                 translate_base_url=self.config.translate_base_url,
@@ -117,7 +117,7 @@ class UnifiedDownloader:
         market: Optional[Market] = None,
         use_cache: bool = True,
         convert_to_pdf: Optional[bool] = None,
-        translate: Optional[str] = None,
+        translate: Optional[bool] = None,
         on_progress: Optional[ProgressCallbackType] = None,
         **kwargs,
     ) -> DownloadResult:
@@ -131,7 +131,7 @@ class UnifiedDownloader:
             market: 市场类型，None表示自动识别
             use_cache: 是否使用缓存
             convert_to_pdf: 是否将HTML转为PDF，None使用配置默认值
-            translate: 翻译目标语言（如"zh"），None使用配置默认值
+            translate: 是否启用翻译（英→中），None使用配置默认值
             on_progress: 进度回调函数
             **kwargs: 其他参数
 
@@ -211,8 +211,8 @@ class UnifiedDownloader:
         # 临时覆盖翻译设置
         if translate is not None:
             if market == Market.M:
-                adapter._translate_lang = translate  # type: ignore[attr-defined]
-            else:
+                adapter._translate_enabled = translate  # type: ignore[attr-defined]
+            elif translate:
                 logger.warning(
                     f"翻译功能仅支持美股，当前市场 {market.value} 将跳过翻译"
                 )

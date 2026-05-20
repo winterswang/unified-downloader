@@ -236,7 +236,7 @@ def download_group():
 @click.option("--output", "-o", type=click.Path(), help="输出目录")
 @click.option("--no-cache", is_flag=True, help="禁用缓存")
 @click.option("--pdf", is_flag=True, help="将HTML文件自动转换为PDF")
-@click.option("--translate", type=str, default=None, help="翻译目标语言 (如 zh)")
+@click.option("--translate", is_flag=True, help="翻译为中文 (仅美股)")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
 @ctx
 def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, translate, verbose):
@@ -266,7 +266,7 @@ def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, tr
         market=market_enum,
         use_cache=not no_cache,
         convert_to_pdf=pdf if pdf else None,
-        translate=translate,
+        translate=translate if translate else None,
     )
 
     echo_result(result, verbose=verbose)
@@ -749,7 +749,7 @@ def config_show(cli_ctx, format):
         "convert_to_pdf": cfg.download.convert_to_pdf,
         "translate_model": cfg.translate_model,
         "translate_base_url": cfg.translate_base_url,
-        "translate_lang": cfg.translate_lang,
+        "translate_enabled": cfg.translate_enabled,
         "translate_qps": cfg.translate_qps,
         "rate_limit": {
             "failure_threshold": cfg.circuit_breaker.failure_threshold,
@@ -770,7 +770,7 @@ def config_show(cli_ctx, format):
         click.echo(f"  自动转PDF:  {config_data['convert_to_pdf']}")
         click.echo(f"  翻译模型:   {config_data['translate_model']}")
         click.echo(f"  翻译API:    {config_data['translate_base_url']}")
-        click.echo(f"  翻译语言:   {config_data['translate_lang'] or '未设置'}")
+        click.echo(f"  翻译启用:   {'是' if config_data['translate_enabled'] else '否'}")
         click.echo(f"  翻译QPS:    {config_data['translate_qps']}")
 
 

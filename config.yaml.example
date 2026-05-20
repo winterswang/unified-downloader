@@ -13,8 +13,9 @@ download:
 sec_user_agent: "your-email@example.com"
 edgar_identity: "your-email@example.com"
 
-# 翻译配置 (BabelDOC + MiniMax M2.7)
+# 翻译配置 (英文→中文, BabelDOC + MiniMax M2.7)
 translate_api_key: "your-api-key-here"
 translate_model: "MiniMax-M2.7"
 translate_base_url: "https://api.minimaxi.com/v1"
+translate_enabled: false
 translate_qps: 4
