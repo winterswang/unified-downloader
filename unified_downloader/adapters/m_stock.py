@@ -796,12 +796,32 @@ class MStockAdapter(BaseStockAdapter):
             )
         )
 
+    # CLI 文档类型 → SEC form type 映射
+    _FORM_TYPE_MAP = {
+        "10k": "10-K",
+        "10q": "10-Q",
+        "6k": "6-K",
+        "8k": "8-K",
+        "20f": "20-F",
+        "s1": "S-1",
+        "s1a": "S-1/A",
+    }
+
+    @classmethod
+    def _normalize_form_type(cls, form_type: str) -> str:
+        """将 CLI 文档类型(如 10k)标准化为 SEC form type(如 10-K)"""
+        normalized = cls._FORM_TYPE_MAP.get(form_type.lower())
+        if normalized:
+            return normalized
+        # 已经是标准格式(如 10-K)或未知类型，原样返回
+        return form_type
+
     def search(
         self, code: str, year: Optional[int] = None, document_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """搜索可用文档"""
         ticker = code.upper()
-        form_type = document_type or "10-K"
+        form_type = self._normalize_form_type(document_type or "10-K")
 
         try:
             return self._search_filings(ticker, form_type, year, size=20)
