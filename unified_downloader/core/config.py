@@ -203,10 +203,17 @@ _default_config: Optional[Config] = None
 
 
 def get_default_config() -> Config:
-    """获取默认配置"""
+    """获取默认配置，优先从项目根目录 config.yaml 加载"""
     global _default_config
     if _default_config is None:
-        _default_config = Config()
+        # 自动查找项目根目录的 config.yaml
+        import unified_downloader
+        pkg_root = Path(unified_downloader.__file__).parent.parent
+        auto_config = pkg_root / "config.yaml"
+        if auto_config.exists():
+            _default_config = Config.from_file(auto_config)
+        else:
+            _default_config = Config()
     return _default_config
 
 

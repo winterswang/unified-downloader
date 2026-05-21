@@ -520,7 +520,7 @@ class MStockAdapter(BaseStockAdapter):
             from unified_downloader.core.config import get_default_config
             cfg = get_default_config()
             sec_ua = cfg.sec_user_agent or os.environ.get(
-                "SEC_USER_AGENT", "UnifiedDownloader/1.0 (Financial Document Downloader)"
+                "SEC_USER_AGENT", os.environ.get("USER") + "/contact@example.com Research Tool/1.0"
             )
         headers = {
             "User-Agent": sec_ua,
