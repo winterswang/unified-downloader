@@ -16,22 +16,35 @@ import json
 import ssl
 import urllib.request
 import subprocess
+from pathlib import Path
+
+# ---- 路径解析（跨平台兼容） ----
+_HOME = Path.home()
+_IMA_CONFIG_DIR = _HOME / ".config" / "ima"
+_COS_UPLOAD_CANDIDATES = [
+    os.environ.get("COS_UPLOAD_SCRIPT"),
+    str(_HOME / ".hermes" / "skills" / "ima" / "knowledge-base" / "scripts" / "cos-upload.cjs"),
+    str(_HOME / ".openclaw" / "workspace" / "skills" / "ima-skills" / "knowledge-base" / "scripts" / "cos-upload.cjs"),
+]
+
+
+def _read_credential(filename: str) -> str:
+    """从 ~/.config/ima/ 读取凭证文件，跨平台安全"""
+    path = _IMA_CONFIG_DIR / filename
+    if path.exists():
+        return path.read_text().strip()
+    return ""
+
 
 # ---- 配置 ----
-IMA_CLIENT_ID = os.environ.get(
-    "IMA_OPENAPI_CLIENTID"
-) or (open("/root/.config/ima/client_id").read().strip() if os.path.exists("/root/.config/ima/client_id") else "")
-IMA_API_KEY = os.environ.get(
-    "IMA_OPENAPI_APIKEY"
-) or (open("/root/.config/ima/api_key").read().strip() if os.path.exists("/root/.config/ima/api_key") else "")
+IMA_CLIENT_ID = os.environ.get("IMA_OPENAPI_CLIENTID") or _read_credential("client_id")
+IMA_API_KEY = os.environ.get("IMA_OPENAPI_APIKEY") or _read_credential("api_key")
 
 BASE_URL = "https://ima.qq.com"
 CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
 
-# cos-upload.cjs 路径（优先使用最新版）
-COS_UPLOAD_SCRIPT = "/root/.openclaw/workspace/skills/ima-skills/knowledge-base/scripts/cos-upload.cjs"
+# cos-upload.cjs 路径：优先级 环境变量 > ~/.hermes/skills/... > ~/.openclaw/...（Docker 回退）
+COS_UPLOAD_SCRIPT = next((p for p in _COS_UPLOAD_CANDIDATES if p and Path(p).exists()), "")
 
 
 def api(path: str, body: dict) -> dict:
@@ -110,6 +123,12 @@ def sync_pdf(pdf_path: str, knowledge_base_id: str, file_name: str = None) -> st
     print(f"  ✅ 凭证获取成功: media_id={media_id[:40]}...")
 
     # ---- Step 3: 上传 PDF 到 COS (使用 node cos-upload.cjs) ----
+    if not COS_UPLOAD_SCRIPT:
+        raise RuntimeError(
+            "未找到 cos-upload.cjs，请:\n"
+            "  - 设置环境变量 COS_UPLOAD_SCRIPT=<路径>\n"
+            "  - 或将 ima-skills 安装到 ~/.hermes/skills/ima/"
+        )
     print(f"  上传中 ({file_size:,} bytes)...")
     proc = subprocess.Popen(
         ["node", COS_UPLOAD_SCRIPT,
