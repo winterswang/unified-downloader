@@ -133,9 +133,9 @@ class MStockAdapter(BaseStockAdapter):
         doc_type_lower = document_type.lower()
 
         if doc_type_lower in ["10k", "ten_k"]:
-            return self._download_10k(code, year, datasource, checkpoint, on_progress)
+            return self._download_10k(code, year, datasource, checkpoint, on_progress, **kwargs)
         elif doc_type_lower in ["10q", "ten_q"]:
-            return self._download_10q(code, year, datasource, checkpoint, on_progress)
+            return self._download_10q(code, year, datasource, checkpoint, on_progress, **kwargs)
         elif doc_type_lower in ["s1", "s1a", "prospectus"]:
             return self._download_s1(
                 code, document_type, datasource, checkpoint, on_progress
@@ -145,7 +145,7 @@ class MStockAdapter(BaseStockAdapter):
         elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
             return self._download_form(code, "20-F", year, checkpoint, on_progress)
         else:
-            return self._download_10k(code, year, datasource, checkpoint, on_progress)
+            return self._download_10k(code, year, datasource, checkpoint, on_progress, **kwargs)
 
     async def async_download(
         self,
@@ -163,11 +163,11 @@ class MStockAdapter(BaseStockAdapter):
 
         if doc_type_lower in ["10k", "ten_k"]:
             return await self._async_download_10k(
-                http_client, code, year, datasource, checkpoint, on_progress
+                http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
         elif doc_type_lower in ["10q", "ten_q"]:
             return await self._async_download_10q(
-                http_client, code, year, datasource, checkpoint, on_progress
+                http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
         elif doc_type_lower in ["s1", "s1a", "prospectus"]:
             return await self._async_download_s1(
@@ -183,7 +183,7 @@ class MStockAdapter(BaseStockAdapter):
             )
         else:
             return await self._async_download_10k(
-                http_client, code, year, datasource, checkpoint, on_progress
+                http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
 
     def _search_edgar(
@@ -234,25 +234,46 @@ class MStockAdapter(BaseStockAdapter):
                     else str(filing.filing_date)
                 )
 
-                results.append(
-                    {
-                        "ticker": ticker.upper(),
-                        "formType": filing.form,
-                        "filedAt": filed_at,
-                        "accessionNo": filing.accession_number,
-                        "cik": filing.cik,
-                        "companyName": str(filing.company)
-                        if hasattr(filing, "company")
-                        else ticker,
-                        "linkToTxt": filing.filing_url
-                        if hasattr(filing, "filing_url")
-                        else None,
-                        "linkToHtml": filing.filing_url
-                        if hasattr(filing, "filing_url")
-                        else None,
-                        "source": "edgar",
-                    }
-                )
+                result_entry = {
+                    "ticker": ticker.upper(),
+                    "formType": filing.form,
+                    "filedAt": filed_at,
+                    "accessionNo": filing.accession_number,
+                    "cik": filing.cik,
+                    "companyName": str(filing.company)
+                    if hasattr(filing, "company")
+                    else ticker,
+                    "linkToTxt": filing.filing_url
+                    if hasattr(filing, "filing_url")
+                    else None,
+                    "linkToHtml": filing.filing_url
+                    if hasattr(filing, "filing_url")
+                    else None,
+                    "source": "edgar",
+                }
+
+                # 6-K is just a cover page; extract exhibit URLs for the real content
+                if filing.form == "6-K" and hasattr(filing, "attachments"):
+                    try:
+                        exhibits = []
+                        primary_doc = getattr(filing, "primary_document", "")
+                        acc_no = filing.accession_number.replace("-", "")
+                        for doc in filing.attachments:
+                            doc_name = str(getattr(doc, "document", ""))
+                            if not doc_name or doc_name == primary_doc:
+                                continue
+                            if doc_name.endswith((".htm", ".html")):
+                                exhibits.append({
+                                    "url": f"https://www.sec.gov/Archives/edgar/data/{filing.cik}/{acc_no}/{doc_name}",
+                                    "description": str(getattr(doc, "description", ""))[:200],
+                                    "document": doc_name,
+                                })
+                        if exhibits:
+                            result_entry["_exhibits"] = exhibits[:10]
+                    except Exception:
+                        pass  # Non-critical; proceed without exhibits
+
+                results.append(result_entry)
 
                 # 如果结果已达到size限制，停止遍历
                 if len(results) >= size:
@@ -431,9 +452,28 @@ class MStockAdapter(BaseStockAdapter):
         datasource: Optional[DataSource],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
+        **kwargs,
     ) -> DownloadResult:
-        """下载10-K年报"""
-        return self._download_form(code, "10-K", year, checkpoint, on_progress)
+        """下载年度报告：FPI用20-F，本土用10-K"""
+        form_type = self._get_annual_form_type(code)
+        return self._download_form(code, form_type, year, checkpoint, on_progress)
+
+    def _get_annual_form_type(self, code: str) -> str:
+        """判断公司的年度报告SEC归档表格类型。
+        
+        外国私人发行人(FPI)如中概股/ADR，年度用20-F
+        美国本土公司用10-K
+        """
+        try:
+            if self._init_edgar():
+                from edgar import Company
+                company = Company(code.upper())
+                if company.is_foreign:
+                    logger.info(f"{code} is FPI, using 20-F for annual report")
+                    return "20-F"
+        except Exception as e:
+            logger.debug(f"FPI check failed for {code}: {e}, defaulting to 10-K")
+        return "10-K"
 
     def _download_10q(
         self,
@@ -442,9 +482,28 @@ class MStockAdapter(BaseStockAdapter):
         datasource: Optional[DataSource],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
+        **kwargs,
     ) -> DownloadResult:
-        """下载10-Q季报"""
-        return self._download_form(code, "10-Q", year, checkpoint, on_progress)
+        """下载季度报告：外国私人发行人(FPI)使用6-K，美国本土公司使用10-Q"""
+        form_type = self._get_quarterly_form_type(code)
+        return self._download_form(code, form_type, year, checkpoint, on_progress)
+
+    def _get_quarterly_form_type(self, code: str) -> str:
+        """判断公司的季度报告SEC归档表格类型。
+        
+        外国私人发行人(Foreign Private Issuer)如中概股，季度用6-K
+        美国本土公司用10-Q
+        """
+        try:
+            if self._init_edgar():
+                from edgar import Company
+                company = Company(code.upper())
+                if company.is_foreign:
+                    logger.info(f"{code} is FPI, using 6-K for quarterly report")
+                    return "6-K"
+        except Exception as e:
+            logger.debug(f"FPI check failed for {code}: {e}, defaulting to 10-Q")
+        return "10-Q"
 
     def _download_s1(
         self,
@@ -466,8 +525,91 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载6-K报告"""
+        """下载6-K报告（含展品合并）"""
         return self._download_form(code, "6-K", year, checkpoint, on_progress)
+
+    def _merge_6k_exhibits(
+        self,
+        main_file: Path,
+        exhibits: List[Dict[str, str]],
+        ticker: str,
+        file_year: Optional[int],
+        form_type: str,
+        headers: Dict[str, str],
+    ) -> Path:
+        """下载6-K展品并合并到主文件中。
+        
+        6-K本身只是SEC封面页，真正的季报/公告内容在EX-99展品中。
+        这个方法下载所有HTML展品，提取body内容，合并为一个HTML文件。
+        
+        Returns:
+            合并后的HTML文件路径
+        """
+        exhibit_files = [main_file]  # Start with the cover
+        
+        for i, ex in enumerate(exhibits):
+            ex_url = ex.get("url", "")
+            ex_desc = ex.get("description", f"exhibit_{i}")
+            if not ex_url:
+                continue
+            
+            # Build exhibit file path
+            ex_path = main_file.parent / f"{ticker}_{file_year}_{form_type}_ex{i}.html"
+            
+            try:
+                self._rate_limiter.wait("edgar_download")
+                logger.info(f"Downloading 6-K exhibit {i}: {ex_desc[:80]}")
+                
+                ex_result = self._http_client.download_file(
+                    url=ex_url, file_path=str(ex_path), headers=headers
+                )
+                if os.path.exists(str(ex_path)) and os.path.getsize(str(ex_path)) > 100:
+                    exhibit_files.append(ex_path)
+                    logger.info(f"  → {ex_path} ({os.path.getsize(str(ex_path))} bytes)")
+                else:
+                    logger.debug(f"  → Exhibit {i} too small or missing, skipped")
+            except Exception as e:
+                logger.warning(f"  → Exhibit {i} download failed: {e}")
+        
+        if len(exhibit_files) == 1:
+            return main_file  # No exhibits were downloaded
+        
+        # Merge all HTML files into one
+        import re
+        combined_parts = []
+        for f in exhibit_files:
+            try:
+                with open(str(f), "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+                body_match = re.search(
+                    r"<body[^>]*>(.*?)</body>", content, re.DOTALL | re.IGNORECASE
+                )
+                if body_match:
+                    combined_parts.append(body_match.group(1))
+                else:
+                    combined_parts.append(content)
+            except Exception as e:
+                logger.warning(f"Failed to read exhibit {f}: {e}")
+        
+        combined_html = (
+            '<html><head><meta charset="utf-8">'
+            '<style>body{font-family:sans-serif;margin:20px}'
+            'hr{page-break-after:always;border:none}'
+            '.exhibit-label{color:#666;font-size:12px;margin-bottom:10px}</style>'
+            '</head><body>'
+            + '<hr>'.join(combined_parts)
+            + '</body></html>'
+        )
+        
+        merged_path = main_file.parent / f"{ticker}_{file_year}_{form_type}_merged.html"
+        with open(str(merged_path), "w", encoding="utf-8") as f:
+            f.write(combined_html)
+        
+        logger.info(
+            f"6-K merged: {len(exhibit_files)} files → {merged_path} "
+            f"({os.path.getsize(str(merged_path))} bytes)"
+        )
+        return merged_path
 
     def _download_filing(
         self,
@@ -544,6 +686,20 @@ class MStockAdapter(BaseStockAdapter):
 
                 # HTML→PDF 转换
                 downloaded_path = Path(result["file_path"])
+
+                # 6-K exhibits: download and merge exhibit content before PDF conversion
+                # (6-K itself is only a cover page; real content is in EX-99 exhibits)
+                if form_type == "6-K":
+                    exhibits = filing.get("_exhibits", [])
+                    if exhibits:
+                        try:
+                            downloaded_path = self._merge_6k_exhibits(
+                                downloaded_path, exhibits, ticker, file_year,
+                                form_type, headers
+                            )
+                        except Exception as e:
+                            logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
+
                 converted_to_pdf = False
                 if (
                     self._convert_to_pdf
@@ -655,8 +811,9 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """异步下载10-K年报"""
-        return await self._async_download_form(http_client, code, "10-K", year, checkpoint, on_progress)
+        """异步下载年度报告：FPI用20-F，本土用10-K"""
+        form_type = self._get_annual_form_type(code)
+        return await self._async_download_form(http_client, code, form_type, year, checkpoint, on_progress)
 
     async def _async_download_10q(
         self,
@@ -667,8 +824,9 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """异步下载10-Q季报"""
-        return await self._async_download_form(http_client, code, "10-Q", year, checkpoint, on_progress)
+        """异步下载季度报告：FPI用6-K，本土用10-Q"""
+        form_type = self._get_quarterly_form_type(code)
+        return await self._async_download_form(http_client, code, form_type, year, checkpoint, on_progress)
 
     async def _async_download_s1(
         self,
@@ -730,6 +888,19 @@ class MStockAdapter(BaseStockAdapter):
 
             # HTML→PDF 转换
             downloaded_path = Path(result["file_path"])
+
+            # 6-K exhibits: download and merge exhibit content before PDF conversion
+            if form_type == "6-K":
+                exhibits = filing.get("_exhibits", [])
+                if exhibits:
+                    try:
+                        downloaded_path = self._merge_6k_exhibits(
+                            downloaded_path, exhibits, ticker, file_year,
+                            form_type, {}
+                        )
+                    except Exception as e:
+                        logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
+
             converted_to_pdf = False
             if (
                 self._convert_to_pdf
