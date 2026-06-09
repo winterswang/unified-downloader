@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+[DEPRECATED] 请使用 skills/unified-downloader/scripts/sync_to_ima.sh
+             该 Bash 版本支持 --dir/--market/--type/YAML 配置等更多功能。
+
 将下载的年报 PDF 同步到 IMA 知识库
 
 用法:
