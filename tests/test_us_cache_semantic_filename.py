@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from unified_downloader.core.downloader import UnifiedDownloader
 from unified_downloader.models.enums import Market
 
@@ -116,3 +118,80 @@ def test_us_quarterly_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
     assert result.success is True
     assert result.cached is True
     assert result.file_path == str(Path("downloads/m/PDD/PDD_2024_6K.pdf"))
+
+
+def test_us_cache_hit_exposes_original_cache_path_metadata(tmp_path, monkeypatch):
+    """Cache-hit callers can inspect the original hash cache path when needed."""
+    monkeypatch.chdir(tmp_path)
+    downloader = UnifiedDownloader()
+    monkeypatch.setattr(
+        downloader._adapters[Market.M],
+        "_get_annual_form_type",
+        lambda code: "10-K",
+    )
+
+    source = tmp_path / "AAPL_2024_10K.pdf"
+    source.write_bytes(b"%PDF-1.4\nmetadata fixture\n" + b"x" * 128)
+    downloader._cache_manager.put("m", "AAPL", 2024, "10k", source)
+    source.unlink()
+
+    result = downloader.download("AAPL", 2024, "10k", market=Market.M)
+
+    assert result.metadata["cache_path"].startswith("data/cache/m/AAP/")
+    assert Path(result.metadata["cache_path"]).exists()
+
+
+def test_us_cache_hit_does_not_recopied_existing_semantic_file(tmp_path, monkeypatch):
+    """Repeated cache hits should not rewrite an unchanged semantic target."""
+    monkeypatch.chdir(tmp_path)
+    downloader = UnifiedDownloader()
+    monkeypatch.setattr(
+        downloader._adapters[Market.M],
+        "_get_annual_form_type",
+        lambda code: "10-K",
+    )
+
+    source = tmp_path / "AAPL_2024_10K.pdf"
+    source.write_bytes(b"%PDF-1.4\ncopy fixture\n" + b"x" * 128)
+    downloader._cache_manager.put("m", "AAPL", 2024, "10k", source)
+    source.unlink()
+
+    first = downloader.download("AAPL", 2024, "10k", market=Market.M)
+    target = Path(first.file_path)
+    first_mtime = target.stat().st_mtime_ns
+
+    def fail_copy(*args, **kwargs):  # pragma: no cover - called only on regression
+        raise AssertionError("copy2 should not run when semantic target is already current")
+
+    monkeypatch.setattr("unified_downloader.core.downloader.shutil.copy2", fail_copy)
+    second = downloader.download("AAPL", 2024, "10k", market=Market.M)
+
+    assert second.file_path == first.file_path
+    assert target.stat().st_mtime_ns == first_mtime
+
+
+@pytest.mark.asyncio
+async def test_async_us_cache_hit_restores_semantic_filename(tmp_path, monkeypatch):
+    """Async downloader cache hits should match sync semantic filename behavior."""
+    monkeypatch.chdir(tmp_path)
+    from unified_downloader.core.async_downloader import AsyncUnifiedDownloader
+
+    downloader = AsyncUnifiedDownloader()
+    monkeypatch.setattr(
+        downloader._downloader._adapters[Market.M],
+        "_get_annual_form_type",
+        lambda code: "10-K",
+    )
+
+    source = tmp_path / "AAPL_2024_10K.pdf"
+    source.write_bytes(b"%PDF-1.4\nasync cache fixture\n" + b"x" * 128)
+    downloader._downloader._cache_manager.put("m", "AAPL", 2024, "10k", source)
+    source.unlink()
+
+    result = await downloader.download("AAPL", 2024, "10k", market=Market.M)
+
+    assert result.success is True
+    assert result.cached is True
+    assert result.file_path == str(Path("downloads/m/AAP/AAPL_2024_10K.pdf"))
+    assert result.metadata["cache_path"].startswith("data/cache/m/AAP/")
+    await downloader.close()
