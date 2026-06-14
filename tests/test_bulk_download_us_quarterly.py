@@ -104,3 +104,25 @@ def test_quarterly_skipped_can_be_retried_by_fallback_form():
 
     assert bulk.should_skip_quarterly_candidate(state, "2025", "Q1-Q3") is False
     assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "6k") is True
+
+
+def test_set_doc_status_persists_quarterly_form_type_for_fallback_protection():
+    bulk = load_bulk_module()
+    state = {"code": "AAPL", "annual": {}, "quarterly": {}}
+
+    bulk.set_doc_status(
+        state,
+        "quarterly",
+        "2025",
+        "Q1-Q3",
+        "ima_failed",
+        filepath="downloads/m/AAP/AAPL_2025_10Q.pdf",
+        fsize=1234567,
+        form_type="10q",
+    )
+
+    entry = state["quarterly"]["2025"]["Q1-Q3"]
+    assert entry["form_type"] == "10q"
+    assert entry["ima"] == "failed"
+    assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "6k") is False
+    assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "10q") is True

@@ -223,7 +223,6 @@ def set_doc_status(state: dict, category: str, year: str, quarter: str,
         if fsize: entry["size"] = fsize
         if reason: entry["reason"] = reason
         if form_type: entry["form_type"] = form_type
-        if form_type: entry["form_type"] = form_type
         if status == "uploaded":
             entry["ima"] = "uploaded"
         elif status == "download_failed" or status == "ima_failed":
@@ -238,8 +237,11 @@ def set_doc_status(state: dict, category: str, year: str, quarter: str,
         if filepath: entry["file"] = str(filepath)
         if fsize: entry["size"] = fsize
         if reason: entry["reason"] = reason
+        if form_type: entry["form_type"] = form_type
         if status == "uploaded":
             entry["ima"] = "uploaded"
+        elif status == "download_failed" or status == "ima_failed":
+            entry["ima"] = "failed"
 
 
 def _quarterly_entry(state, year, qlabel):
