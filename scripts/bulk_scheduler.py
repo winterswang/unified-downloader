@@ -27,6 +27,7 @@ STATUS_ICONS = {
 }
 
 DEDUP_US = {"TCEHY.US", "BEKE.US", "HTHT.US"}
+PROCESSING_STALE_SECONDS = 2 * 3600
 
 
 def _normalize_watchlist_rows(rows: list) -> list[tuple[str, str, str]]:
@@ -145,8 +146,22 @@ def _find_state(code: str) -> Path | None:
 
 
 
+def _is_ima_success(value: str | None) -> bool:
+    return value == "uploaded"
+
+
+def _is_ima_failure(value: str | None) -> bool:
+    return bool(value and value != "uploaded")
+
+
 def compute_summary_from_state(st: dict) -> dict:
-    """Compute summary from per-document state when summary is missing/stale."""
+    """Compute summary from per-document state.
+
+    The per-document records are the source of truth.  Older state files may have
+    stale/optimistic ``summary`` blocks, and IMA failures can be represented by
+    specific reason strings such as ``semantic_upload_rate_limited`` rather than
+    exactly ``failed``.
+    """
     sm = {
         "annual_ok": 0, "annual_skipped": 0, "annual_failed": 0,
         "quarterly_ok": 0, "quarterly_skipped": 0, "quarterly_failed": 0,
@@ -154,39 +169,35 @@ def compute_summary_from_state(st: dict) -> dict:
     }
     for d in st.get("annual", {}).values():
         status = d.get("status", "")
-        if status in ("downloaded", "uploaded"):
+        if status == "uploaded" or (status == "downloaded" and not _is_ima_failure(d.get("ima"))):
             sm["annual_ok"] += 1
         elif status == "skipped":
             sm["annual_skipped"] += 1
         elif "failed" in status:
             sm["annual_failed"] += 1
-        if d.get("ima") == "uploaded":
+        if _is_ima_success(d.get("ima")):
             sm["ima_ok"] += 1
-        elif d.get("ima") == "failed":
+        elif _is_ima_failure(d.get("ima")) or status == "ima_failed":
             sm["ima_failed"] += 1
     for qs in st.get("quarterly", {}).values():
         for d in qs.values():
             status = d.get("status", "")
-            if status in ("downloaded", "uploaded"):
+            if status == "uploaded" or (status == "downloaded" and not _is_ima_failure(d.get("ima"))):
                 sm["quarterly_ok"] += 1
             elif status == "skipped":
                 sm["quarterly_skipped"] += 1
             elif "failed" in status:
                 sm["quarterly_failed"] += 1
-            if d.get("ima") == "uploaded":
+            if _is_ima_success(d.get("ima")):
                 sm["ima_ok"] += 1
-            elif d.get("ima") == "failed":
+            elif _is_ima_failure(d.get("ima")) or status == "ima_failed":
                 sm["ima_failed"] += 1
     return sm
 
 
 def get_state_summary(st: dict) -> dict:
-    """Return a reliable summary even for older state files without summary."""
-    sm = st.get("summary") or {}
-    computed = compute_summary_from_state(st)
-    if not sm or all(sm.get(k, 0) == 0 for k in ("annual_ok", "quarterly_ok", "ima_ok")):
-        return computed
-    return {**computed, **sm}
+    """Return reliable summary using per-document records as source of truth."""
+    return compute_summary_from_state(st)
 
 
 def summarize_years(entries: dict, status_values: set) -> list[str]:
@@ -226,6 +237,79 @@ def build_stock_summary(code: str, stock: dict, st: dict | None, timed_out: bool
         parts.append(f"超时/中断于 {at}，下次需从未完成年份继续或重试")
     parts.append(f"IMA {sm.get('ima_ok', 0)}")
     return "；".join(parts)
+
+
+
+def reconcile_queue_counts(q: dict) -> None:
+    q["done"] = sum(1 for s in q.get("stocks", []) if s.get("status") == "done")
+    q["failed"] = sum(1 for s in q.get("stocks", []) if s.get("status") == "failed")
+    q["pending"] = sum(1 for s in q.get("stocks", []) if s.get("status") == "pending")
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=TZ_CN)
+
+
+def _processing_age_seconds(stock: dict, state_path: Path | None) -> float:
+    updated = _parse_iso_datetime(stock.get("updated_at"))
+    if updated:
+        return (datetime.now(TZ_CN) - updated).total_seconds()
+    if state_path and state_path.exists():
+        return datetime.now(TZ_CN).timestamp() - state_path.stat().st_mtime
+    if QUEUE_FILE.exists():
+        return datetime.now(TZ_CN).timestamp() - QUEUE_FILE.stat().st_mtime
+    return 0.0
+
+
+def recover_stale_processing(q: dict, max_age_seconds: int = PROCESSING_STALE_SECONDS) -> list[str]:
+    """Recover stale processing rows so cron can make forward progress.
+
+    A previous cron run may exit while the child process keeps running or after a
+    partial state write.  We only recover rows older than ``max_age_seconds`` to
+    avoid racing a legitimately running cron invocation.
+    """
+    recovered = []
+    for stock in q.get("stocks", []):
+        if stock.get("status") != "processing":
+            continue
+        code = stock.get("code", "")
+        sf = _find_state(code)
+        if _processing_age_seconds(stock, sf) < max_age_seconds:
+            continue
+        st = json.loads(sf.read_text()) if sf and sf.exists() else None
+        sm = get_state_summary(st) if st else {}
+        failures = sm.get("annual_failed", 0) + sm.get("quarterly_failed", 0) + sm.get("ima_failed", 0)
+        ok = sm.get("annual_ok", 0) + sm.get("quarterly_ok", 0)
+        if failures > 0:
+            stock["status"] = "pending"
+            stock["recovered_from"] = "processing"
+            stock["recovery_reason"] = "state_has_failures_retry"
+        elif ok > 0:
+            # Partial success should still be retried to finish any missing docs,
+            # but the next run can reuse persisted state/cache.
+            stock["status"] = "pending"
+            stock["recovered_from"] = "processing"
+            stock["recovery_reason"] = "partial_state_retry"
+        else:
+            stock["status"] = "pending"
+            stock["recovered_from"] = "processing"
+            stock["recovery_reason"] = "empty_or_missing_state_retry"
+        stock["updated_at"] = datetime.now(TZ_CN).isoformat()
+        recovered.append(code)
+    if recovered:
+        q["last_updated"] = datetime.now(TZ_CN).isoformat()
+        reconcile_queue_counts(q)
+    return recovered
+
+
+def has_unfinished_queue_items(q: dict) -> bool:
+    return any(s.get("status") in {"pending", "processing"} for s in q.get("stocks", []))
 
 def show_status():
     if not QUEUE_FILE.exists():
@@ -316,9 +400,17 @@ def process_next():
     if not QUEUE_FILE.exists():
         print("ERROR: no queue. Run --init first."); sys.exit(1)
     q = json.loads(QUEUE_FILE.read_text())
+    recovered = recover_stale_processing(q, PROCESSING_STALE_SECONDS)
+    if recovered:
+        QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
+        print(f"Recovered stale processing rows: {', '.join(recovered)}")
+
     idx = next((i for i,s in enumerate(q["stocks"]) if s["status"]=="pending"), None)
     if idx is None:
-        print("All done!")
+        if has_unfinished_queue_items(q):
+            print("No pending stocks; waiting for active processing rows or stale recovery window.")
+        else:
+            print("All stocks processed!")
         show_status()
         return
 
@@ -378,7 +470,12 @@ def process_next():
     print(f"\n{stock['status']} {code} | A:{stock['annual_ok']} Q:{stock['quarterly_ok']} F:{stock['failures']}")
     if stock.get("summary_text"):
         print(stock["summary_text"])
-    if q["pending"] <= 0:
+    reconcile_queue_counts(q)
+    QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
+    if not has_unfinished_queue_items(q):
+        print("All stocks processed!")
+        show_status()
+    elif q["pending"] <= 0:
         show_status()
 
 
