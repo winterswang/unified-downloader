@@ -61,7 +61,15 @@ class AsyncUnifiedDownloader:
             market.value, code, year, document_type
         )
         if cached_path:
-            return DownloadResult(success=True, file_path=cached_path, cached=True)
+            restored_path = self._downloader._restore_semantic_cache_path(
+                market, code, year, document_type, cached_path
+            )
+            return DownloadResult(
+                success=True,
+                file_path=restored_path,
+                cached=True,
+                metadata={"cache_path": cached_path},
+            )
 
         # 执行下载
         return await self._download_direct(

@@ -2,7 +2,9 @@
 
 import logging
 import re
+import shutil
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 import concurrent.futures
 
@@ -153,22 +155,39 @@ class UnifiedDownloader:
                 market.value, code, year, document_type
             )
             if cached_path:
-                duration_ms = int((time.time() - start_time) * 1000)
-                self._log_event(
-                    EventType.CACHE_HIT,
-                    market,
-                    code,
-                    year,
-                    document_type,
-                    True,
-                    duration_ms=duration_ms,
+                # US SEC downloads are cached under MD5 keys.  Returning those
+                # paths directly makes downstream IMA uploads show hash filenames.
+                # Restore a semantic downloads/... filename before reporting a hit.
+                restored_path = self._restore_semantic_cache_path(
+                    market, code, year, document_type, cached_path
                 )
-                return DownloadResult(
-                    success=True,
-                    file_path=cached_path,
-                    cached=True,
-                    duration_ms=duration_ms,
-                )
+
+                # If the caller explicitly asks for PDF but the cached US artifact
+                # is HTML, do not short-circuit here.  Let the US adapter download
+                # / convert so IMA receives an uploadable PDF.
+                if not (
+                    market == Market.M
+                    and convert_to_pdf is True
+                    and Path(restored_path).suffix.lower() in (".html", ".htm")
+                ):
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    self._log_event(
+                        EventType.CACHE_HIT,
+                        market,
+                        code,
+                        year,
+                        document_type,
+                        True,
+                        duration_ms=duration_ms,
+                    )
+                    return DownloadResult(
+                        success=True,
+                        file_path=restored_path,
+                        file_size=Path(restored_path).stat().st_size,
+                        cached=True,
+                        duration_ms=duration_ms,
+                        metadata={"cache_path": cached_path},
+                    )
 
         # 生成任务ID
         task_id = self._generate_task_id(market, code, year, document_type)
@@ -326,6 +345,89 @@ class UnifiedDownloader:
                 error_message=str(e),
                 duration_ms=duration_ms,
             )
+
+
+    def _restore_semantic_cache_path(
+        self,
+        market: Market,
+        code: str,
+        year: Optional[int],
+        document_type: str,
+        cached_path: str,
+    ) -> str:
+        """Return a human-readable downloads path for a cached artifact.
+
+        CacheManager stores artifacts as ``data/cache/<market>/<prefix>/<md5>.*``.
+        That is fine internally, but callers pass ``DownloadResult.file_path`` to
+        IMA, whose displayed/searchable document name is the source basename.
+        For US annual/quarterly SEC filings especially, returning a hash filename
+        makes uploaded documents unsearchable.
+        """
+        cached = Path(cached_path)
+        if market != Market.M or not cached.exists():
+            return cached_path
+
+        ticker = code.upper()
+        doc_label = self._semantic_us_doc_label(document_type)
+        if market == Market.M:
+            adapter = self._adapters.get(Market.M)
+            normalized = document_type.lower().replace("-", "_")
+            try:
+                if normalized in ("annual_report", "10k", "ten_k") and hasattr(
+                    adapter, "_get_annual_form_type"
+                ):
+                    doc_label = self._semantic_us_doc_label(
+                        adapter._get_annual_form_type(ticker)  # type: ignore[attr-defined]
+                    )
+                elif normalized in ("quarterly", "10q", "ten_q") and hasattr(
+                    adapter, "_get_quarterly_form_type"
+                ):
+                    doc_label = self._semantic_us_doc_label(
+                        adapter._get_quarterly_form_type(ticker)  # type: ignore[attr-defined]
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to resolve US semantic form type for %s %s: %s",
+                    ticker,
+                    document_type,
+                    exc,
+                )
+
+        base_dir = Path("downloads") / market.value / ticker[:3]
+        if year is None:
+            filename = f"{ticker}_{doc_label}{cached.suffix}"
+        else:
+            filename = f"{ticker}_{year}_{doc_label}{cached.suffix}"
+        target = base_dir / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        if cached.resolve() != target.resolve():
+            shutil.copy2(str(cached), str(target))
+        return str(target)
+
+    @staticmethod
+    def _semantic_us_doc_label(document_type: str) -> str:
+        """Normalize US document type aliases to readable SEC form labels."""
+        normalized = document_type.lower().replace("-", "_")
+        labels = {
+            "annual_report": "10K",
+            "10k": "10K",
+            "ten_k": "10K",
+            "quarterly": "10Q",
+            "10q": "10Q",
+            "ten_q": "10Q",
+            "20f": "20F",
+            "20_f": "20F",
+            "twenty_f": "20F",
+            "6k": "6K",
+            "6_k": "6K",
+            "8k": "8K",
+            "8_k": "8K",
+            "s1": "S1",
+            "s1a": "S1A",
+            "prospectus": "S1",
+        }
+        return labels.get(normalized, document_type.replace("-", "").upper())
 
     def batch_download(
         self,
