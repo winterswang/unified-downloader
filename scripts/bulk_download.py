@@ -12,7 +12,14 @@
     logs/failures.log              失败明细日志
 """
 
-import argparse, json, logging, os, re, subprocess, sys, time
+import argparse
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -80,7 +87,8 @@ def _lookup_us_map(mapping, code):
     return None, None
 
 def resolve_target(code, market, adr_map):
-    mkt = market.upper(); cu = code.upper()
+    mkt = market.upper()
+    cu = code.upper()
     if mkt == "US":
         key, info = _lookup_us_map(adr_map.get("use_hk_source", {}), cu)
         if info:
@@ -107,7 +115,8 @@ def search_docs(code, market, rtype, limit=50):
         # A/H outputs include Chinese dates ("2024 年"); US SEC outputs use
         # ISO filing dates ("10-Q - 2026-05-01", "6-K - 2025-08-25").
         m = re.search(r'(\d{4})\s*年', line) or re.search(r'\b(\d{4})-\d{2}-\d{2}\b', line)
-        if m: docs.append((m.group(1), line.strip()))
+        if m:
+            docs.append((m.group(1), line.strip()))
     return docs
 
 def download_one(code, market, year, rtype, retries=3):
@@ -143,11 +152,14 @@ def download_one(code, market, year, rtype, retries=3):
     return None
 
 def validate_file(fpath):
-    if not fpath or not fpath.exists(): return False
-    if fpath.stat().st_size < 100: return False
+    if not fpath or not fpath.exists():
+        return False
+    if fpath.stat().st_size < 100:
+        return False
     if fpath.suffix == '.html':
         text = fpath.read_text()[:2000]
-        if any(kw in text for kw in ["Access Denied","403","Page Not Found"]): return False
+        if any(kw in text for kw in ["Access Denied", "403", "Page Not Found"]):
+            return False
     return True
 
 def upload_ima(fpath, kb="年报季度报知识库"):
@@ -220,10 +232,14 @@ def set_doc_status(state: dict, category: str, year: str, quarter: str,
         entry = state["annual"][year]
         entry["status"] = status
         entry["updated"] = datetime.now(TZ_CN).isoformat()
-        if filepath: entry["file"] = str(filepath)
-        if fsize: entry["size"] = fsize
-        if reason: entry["reason"] = reason
-        if form_type: entry["form_type"] = form_type
+        if filepath:
+            entry["file"] = str(filepath)
+        if fsize:
+            entry["size"] = fsize
+        if reason:
+            entry["reason"] = reason
+        if form_type:
+            entry["form_type"] = form_type
         if status == "uploaded":
             entry["ima"] = "uploaded"
         elif status == "download_failed" or status == "ima_failed":
@@ -235,10 +251,14 @@ def set_doc_status(state: dict, category: str, year: str, quarter: str,
         entry = state["quarterly"][year][quarter]
         entry["status"] = status
         entry["updated"] = datetime.now(TZ_CN).isoformat()
-        if filepath: entry["file"] = str(filepath)
-        if fsize: entry["size"] = fsize
-        if reason: entry["reason"] = reason
-        if form_type: entry["form_type"] = form_type
+        if filepath:
+            entry["file"] = str(filepath)
+        if fsize:
+            entry["size"] = fsize
+        if reason:
+            entry["reason"] = reason
+        if form_type:
+            entry["form_type"] = form_type
         if status == "uploaded":
             entry["ima"] = "uploaded"
         elif status == "download_failed" or status == "ima_failed":
@@ -281,20 +301,30 @@ def compute_summary(state: dict) -> dict:
          "quarterly_ok": 0, "quarterly_skipped": 0, "quarterly_failed": 0,
          "ima_ok": 0, "ima_failed": 0}
     for y, d in state.get("annual", {}).items():
-        st = d.get("status","")
-        if st in ("downloaded","uploaded"): s["annual_ok"] += 1
-        elif st == "skipped": s["annual_skipped"] += 1
-        elif "failed" in st: s["annual_failed"] += 1
-        if d.get("ima") == "uploaded": s["ima_ok"] += 1
-        elif d.get("ima") == "failed": s["ima_failed"] += 1
+        st = d.get("status", "")
+        if st in ("downloaded", "uploaded"):
+            s["annual_ok"] += 1
+        elif st == "skipped":
+            s["annual_skipped"] += 1
+        elif "failed" in st:
+            s["annual_failed"] += 1
+        if d.get("ima") == "uploaded":
+            s["ima_ok"] += 1
+        elif d.get("ima") == "failed":
+            s["ima_failed"] += 1
     for y, qs in state.get("quarterly", {}).items():
         for q, d in qs.items():
-            st = d.get("status","")
-            if st in ("downloaded","uploaded"): s["quarterly_ok"] += 1
-            elif st == "skipped": s["quarterly_skipped"] += 1
-            elif "failed" in st: s["quarterly_failed"] += 1
-            if d.get("ima") == "uploaded": s["ima_ok"] += 1
-            elif d.get("ima") == "failed": s["ima_failed"] += 1
+            st = d.get("status", "")
+            if st in ("downloaded", "uploaded"):
+                s["quarterly_ok"] += 1
+            elif st == "skipped":
+                s["quarterly_skipped"] += 1
+            elif "failed" in st:
+                s["quarterly_failed"] += 1
+            if d.get("ima") == "uploaded":
+                s["ima_ok"] += 1
+            elif d.get("ima") == "failed":
+                s["ima_failed"] += 1
     return s
 
 # ── 主流程 ──
@@ -313,8 +343,10 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
     state = load_state(code)
     state["name"] = name
     state["market"] = market
-    if is_adr_hk: state["adr_source"] = f"{dl_code}.HK"
-    if is_20f: state["note"] = "ADR 20-F only"
+    if is_adr_hk:
+        state["adr_source"] = f"{dl_code}.HK"
+    if is_20f:
+        state["note"] = "ADR 20-F only"
     save_state(state)
 
     cur = datetime.now(TZ_CN).year
@@ -322,8 +354,10 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
 
     log.info("="*50)
     log.info("START %s (%s) market=%s", code, name, market)
-    if is_adr_hk: log.info("  ADR → HK source: %s.HK", dl_code)
-    if is_20f: log.info("  ADR 20-F only (no quarterly)")
+    if is_adr_hk:
+        log.info("  ADR → HK source: %s.HK", dl_code)
+    if is_20f:
+        log.info("  ADR 20-F only (no quarterly)")
 
     # ── 年报 ──
     log.info("📊 Annual (%dy)", annual_years)
@@ -433,11 +467,11 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
              summary["ima_ok"], len(failures))
     if failures:
         log.warning("FAILURES: %s", failures)
-        print(f"\n__FEISHU_NOTIFY__")
+        print("\n__FEISHU_NOTIFY__")
         print(f"⚠️ {code} {name}")
         for f in failures:
             print(f"  • {f}")
-        print(f"__END_FEISHU_NOTIFY__")
+        print("__END_FEISHU_NOTIFY__")
 
     return state
 
