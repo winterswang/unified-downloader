@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-import json, subprocess, sys
+import argparse, json, os, subprocess, sys
 from subprocess import TimeoutExpired
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -29,30 +29,108 @@ STATUS_ICONS = {
 DEDUP_US = {"TCEHY.US", "BEKE.US", "HTHT.US"}
 
 
-def init_queue():
-    sys.path.insert(0, str(Path.home() / "code" / "morning-brief"))
-    from src.utils.database import get_connection
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT stock_code,stock_name,market FROM watchlist WHERE is_active=1 AND is_index=0 ORDER BY market,stock_code")
-    rows = cur.fetchall()
-    conn.close()
+def _normalize_watchlist_rows(rows: list) -> list[tuple[str, str, str]]:
+    """Normalize watchlist rows from JSON or external providers."""
+    normalized = []
+    for item in rows:
+        if isinstance(item, dict):
+            code = item.get("code") or item.get("stock_code") or item.get("symbol")
+            name = item.get("name") or item.get("stock_name") or ""
+            market = item.get("market")
+        else:
+            code, name, market = item[:3]
+        if not code or not market:
+            raise SystemExit(
+                "Invalid watchlist row. Expected code/name/market fields, "
+                f"got: {item!r}"
+            )
+        normalized.append((str(code), str(name), str(market).upper()))
+    return normalized
 
+
+def load_watchlist_file(path: str | Path) -> list[tuple[str, str, str]]:
+    """Load watchlist rows from an explicit JSON file.
+
+    Supported JSON shapes:
+    - [{"code": "AAPL.US", "name": "Apple", "market": "US"}, ...]
+    - {"stocks": [{"stock_code": "600519.SH", "stock_name": "贵州茅台", "market": "CN"}]}
+    """
+    watchlist_path = Path(path).expanduser()
+    if not watchlist_path.exists():
+        raise SystemExit(f"watchlist file not found: {watchlist_path}")
+    data = json.loads(watchlist_path.read_text(encoding="utf-8"))
+    rows = data.get("stocks", data) if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        raise SystemExit("watchlist JSON must be a list or an object with a 'stocks' list")
+    return _normalize_watchlist_rows(rows)
+
+
+def load_watchlist_from_morning_brief(path: str | Path | None = None) -> list[tuple[str, str, str]]:
+    """Opt-in compatibility loader for a local morning-brief checkout."""
+    raw_path = str(path or os.environ.get("MORNING_BRIEF_PATH", "")).strip()
+    if not raw_path:
+        raise SystemExit(
+            "--from-morning-brief requires --morning-brief-path or MORNING_BRIEF_PATH. "
+            "Prefer --watchlist-file for a decoupled queue source."
+        )
+    mb_path = Path(raw_path).expanduser()
+    if not mb_path.exists():
+        raise SystemExit(
+            f"morning-brief not found at {mb_path}. Set MORNING_BRIEF_PATH, "
+            "pass --morning-brief-path, or use --watchlist-file."
+        )
+    sys.path.insert(0, str(mb_path))
+    try:
+        from src.utils.database import get_connection
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            f"Cannot import morning-brief database helper from {mb_path}: {exc}. "
+            "Use --watchlist-file to avoid cross-repo imports."
+        ) from exc
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT stock_code,stock_name,market FROM watchlist WHERE is_active=1 AND is_index=0 ORDER BY market,stock_code")
+        return _normalize_watchlist_rows(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def build_queue(rows: list[tuple[str, str, str]]) -> list[dict]:
     queue = []
     for code, name, market in rows:
-        if market == "US" and code in DEDUP_US:
+        if market == "US" and code.upper() in DEDUP_US:
             continue
-        queue.append({"code":code,"name":name,"market":market,"status":"pending",
-                       "annual_ok":0,"quarterly_ok":0,"failures":0})
+        queue.append({"code": code, "name": name, "market": market, "status": "pending",
+                       "annual_ok": 0, "quarterly_ok": 0, "failures": 0})
+    return queue
+
+
+def write_queue(queue: list[dict]) -> None:
     QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
     QUEUE_FILE.write_text(json.dumps({
         "created_at": datetime.now(TZ_CN).isoformat(),
-        "total":len(queue),"pending":len(queue),"done":0,"failed":0,
-        "stocks":queue
+        "total": len(queue), "pending": len(queue), "done": 0, "failed": 0,
+        "stocks": queue,
     }, ensure_ascii=False, indent=2))
     print(f"Queue: {len(queue)} stocks (CN:{sum(1 for s in queue if s['market']=='CN')} "
           f"HK:{sum(1 for s in queue if s['market']=='HK')} "
           f"US:{sum(1 for s in queue if s['market']=='US')})")
+
+
+def init_queue(watchlist_file: str | None = None, from_morning_brief: bool = False,
+               morning_brief_path: str | None = None):
+    if watchlist_file:
+        rows = load_watchlist_file(watchlist_file)
+    elif from_morning_brief:
+        rows = load_watchlist_from_morning_brief(morning_brief_path)
+    else:
+        raise SystemExit(
+            "Queue source required. Use --init --watchlist-file FILE.json, or "
+            "opt in to the legacy cross-repo source with --init --from-morning-brief "
+            "--morning-brief-path PATH (or MORNING_BRIEF_PATH)."
+        )
+    write_queue(build_queue(rows))
 
 
 def _find_state(code: str) -> Path | None:
@@ -305,14 +383,23 @@ def process_next():
 
 
 def main():
-    if "--init" in sys.argv:
-        init_queue()
-    elif "--status" in sys.argv:
+    parser = argparse.ArgumentParser(description="Bulk download scheduler")
+    parser.add_argument("--init", action="store_true", help="Initialize queue from an explicit source")
+    parser.add_argument("--watchlist-file", help="JSON watchlist file for --init")
+    parser.add_argument("--from-morning-brief", action="store_true", help="Opt in to loading watchlist from a local morning-brief checkout")
+    parser.add_argument("--morning-brief-path", help="Path to morning-brief checkout; alternatively set MORNING_BRIEF_PATH")
+    parser.add_argument("--status", action="store_true", help="Show queue status")
+    parser.add_argument("--detail", help="Show detailed state for one code")
+    parser.add_argument("--log", action="store_true", help="Show recent bulk log")
+    args = parser.parse_args()
+
+    if args.init:
+        init_queue(args.watchlist_file, args.from_morning_brief, args.morning_brief_path)
+    elif args.status:
         show_status()
-    elif "--detail" in sys.argv:
-        idx = sys.argv.index("--detail")+1
-        show_detail(sys.argv[idx] if idx<len(sys.argv) else None)
-    elif "--log" in sys.argv:
+    elif args.detail:
+        show_detail(args.detail)
+    elif args.log:
         if LOG_FILE.exists():
             print(LOG_FILE.read_text()[-5000:])
         else:
