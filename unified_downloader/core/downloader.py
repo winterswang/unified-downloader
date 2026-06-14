@@ -369,6 +369,30 @@ class UnifiedDownloader:
 
         ticker = code.upper()
         doc_label = self._semantic_us_doc_label(document_type)
+        if market == Market.M:
+            adapter = self._adapters.get(Market.M)
+            normalized = document_type.lower().replace("-", "_")
+            try:
+                if normalized in ("annual_report", "10k", "ten_k") and hasattr(
+                    adapter, "_get_annual_form_type"
+                ):
+                    doc_label = self._semantic_us_doc_label(
+                        adapter._get_annual_form_type(ticker)  # type: ignore[attr-defined]
+                    )
+                elif normalized in ("quarterly", "10q", "ten_q") and hasattr(
+                    adapter, "_get_quarterly_form_type"
+                ):
+                    doc_label = self._semantic_us_doc_label(
+                        adapter._get_quarterly_form_type(ticker)  # type: ignore[attr-defined]
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to resolve US semantic form type for %s %s: %s",
+                    ticker,
+                    document_type,
+                    exc,
+                )
+
         base_dir = Path("downloads") / market.value / ticker[:3]
         if year is None:
             filename = f"{ticker}_{doc_label}{cached.suffix}"
