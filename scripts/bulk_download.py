@@ -3,7 +3,7 @@
 批量下载单只股票的年报/季报 → IMA 知识库（细粒度状态追踪版）。
 
 用法:
-    cd /root/code/unified-downloader && python3 scripts/bulk_download.py \\
+    cd <repo-root> && python3 scripts/bulk_download.py \\
         --code 600519 --market a --name 贵州茅台
 
 输出文件:
@@ -38,13 +38,14 @@ def setup_logging(code: str):
     logger.addHandler(ch)
     return logger
 
-log = None  # 延迟初始化
+log = logging.getLogger("bulk")
 
 # ── 路径常量 ──
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = PROJECT_ROOT / "data" / "bulk_state"
 ADR_MAP_FILE = PROJECT_ROOT / "config" / "adr_map.json"
-IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
+DEFAULT_IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
+IMA_SYNC_SCRIPT = Path(os.environ.get("IMA_SYNC_SCRIPT_PATH", DEFAULT_IMA_SYNC_SCRIPT))
 TZ_CN = timezone(timedelta(hours=8))
 
 ANNUAL_MAP = {"CN": "annual_report", "HK": "annual_report", "US": "10k", "US_20F": "20f"}
@@ -119,9 +120,9 @@ def download_one(code, market, year, rtype, retries=3):
         cmd = ["python3", "-m", "unified_downloader.cli", "download", "single",
                code, "-y", year, "-t", rtype, "-m", flag]
         # 美股 SEC 原始文件通常是 HTML；IMA 文件上传不接受本地 HTML。
-        # 同时 unified-downloader 的 --pdf 对 cache hit 不会二次转换，因此 US 必须禁用缓存。
+        # PR #19 fixed cache-hit + --pdf so cache can be reused safely here.
         if market == "US":
-            cmd.extend(["--pdf", "--no-cache"])
+            cmd.append("--pdf")
         rc, out, err = run(cmd, timeout=180 if market == "US" else 120)
         if rc != 0:
             log.warning("  download command failed rc=%s cmd=%s stdout=%s stderr=%s",

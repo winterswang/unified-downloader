@@ -126,3 +126,31 @@ def test_set_doc_status_persists_quarterly_form_type_for_fallback_protection():
     assert entry["ima"] == "failed"
     assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "6k") is False
     assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "10q") is True
+
+
+def test_download_one_us_uses_pdf_without_disabling_cache(monkeypatch, tmp_path):
+    bulk = load_bulk_module()
+    bulk.log = __import__("logging").getLogger("test-bulk")
+    output = tmp_path / "downloads/m/AAP/AAPL_2025_10Q.pdf"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"%PDF-1.4\n" + b"x" * 128)
+    rel = output.relative_to(tmp_path)
+    monkeypatch.setattr(bulk, "PROJECT_ROOT", tmp_path)
+    calls = []
+
+    def fake_run(cmd, timeout=120):
+        calls.append(cmd)
+        return 0, f"✓ 下载成功\n  文件: {rel}", ""
+
+    monkeypatch.setattr(bulk, "run", fake_run)
+
+    assert bulk.download_one("AAPL", "US", "2025", "10q") == output
+    assert "--pdf" in calls[0]
+    assert "--no-cache" not in calls[0]
+
+
+def test_ima_sync_script_path_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("IMA_SYNC_SCRIPT_PATH", "/tmp/custom-sync-to-ima.sh")
+    bulk = load_bulk_module()
+
+    assert str(bulk.IMA_SYNC_SCRIPT) == "/tmp/custom-sync-to-ima.sh"
