@@ -455,14 +455,16 @@ class MStockAdapter(BaseStockAdapter):
         **kwargs,
     ) -> DownloadResult:
         """下载年度报告：FPI用20-F，本土用10-K"""
-        form_type = self._get_annual_form_type(code)
+        form_type = self.get_annual_form_type(code)
         return self._download_form(code, form_type, year, checkpoint, on_progress)
 
-    def _get_annual_form_type(self, code: str) -> str:
+    def get_annual_form_type(self, code: str) -> str:
         """判断公司的年度报告SEC归档表格类型。
-        
+
         外国私人发行人(FPI)如中概股/ADR，年度用20-F
         美国本土公司用10-K
+
+        作为 USFormResolver 协议成员被 UnifiedDownloader 跨模块调用。
         """
         try:
             if self._init_edgar():
@@ -485,14 +487,16 @@ class MStockAdapter(BaseStockAdapter):
         **kwargs,
     ) -> DownloadResult:
         """下载季度报告：外国私人发行人(FPI)使用6-K，美国本土公司使用10-Q"""
-        form_type = self._get_quarterly_form_type(code)
+        form_type = self.get_quarterly_form_type(code)
         return self._download_form(code, form_type, year, checkpoint, on_progress)
 
-    def _get_quarterly_form_type(self, code: str) -> str:
+    def get_quarterly_form_type(self, code: str) -> str:
         """判断公司的季度报告SEC归档表格类型。
-        
+
         外国私人发行人(Foreign Private Issuer)如中概股，季度用6-K
-        美国本土公司用10-Q
+        美国本土公司使用10-Q
+
+        作为 USFormResolver 协议成员被 UnifiedDownloader 跨模块调用。
         """
         try:
             if self._init_edgar():
@@ -812,7 +816,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """异步下载年度报告：FPI用20-F，本土用10-K"""
-        form_type = self._get_annual_form_type(code)
+        form_type = self.get_annual_form_type(code)
         return await self._async_download_form(http_client, code, form_type, year, checkpoint, on_progress)
 
     async def _async_download_10q(
@@ -825,7 +829,7 @@ class MStockAdapter(BaseStockAdapter):
         on_progress: Optional[Callable],
     ) -> DownloadResult:
         """异步下载季度报告：FPI用6-K，本土用10-Q"""
-        form_type = self._get_quarterly_form_type(code)
+        form_type = self.get_quarterly_form_type(code)
         return await self._async_download_form(http_client, code, form_type, year, checkpoint, on_progress)
 
     async def _async_download_s1(

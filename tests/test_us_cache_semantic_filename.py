@@ -21,7 +21,7 @@ def test_us_cache_hit_restores_semantic_download_filename(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "10-K",
     )
 
@@ -47,7 +47,7 @@ def test_us_cache_hit_with_pdf_request_ignores_cached_html(tmp_path, monkeypatch
 
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "10-K",
     )
 
@@ -82,7 +82,7 @@ def test_us_annual_report_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
     downloader = UnifiedDownloader()
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "20-F",
     )
 
@@ -104,7 +104,7 @@ def test_us_quarterly_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
     downloader = UnifiedDownloader()
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_quarterly_form_type",
+        "get_quarterly_form_type",
         lambda code: "6-K",
     )
 
@@ -126,7 +126,7 @@ def test_us_cache_hit_exposes_original_cache_path_metadata(tmp_path, monkeypatch
     downloader = UnifiedDownloader()
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "10-K",
     )
 
@@ -147,7 +147,7 @@ def test_us_cache_hit_does_not_recopied_existing_semantic_file(tmp_path, monkeyp
     downloader = UnifiedDownloader()
     monkeypatch.setattr(
         downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "10-K",
     )
 
@@ -179,7 +179,7 @@ async def test_async_us_cache_hit_restores_semantic_filename(tmp_path, monkeypat
     downloader = AsyncUnifiedDownloader()
     monkeypatch.setattr(
         downloader._downloader._adapters[Market.M],
-        "_get_annual_form_type",
+        "get_annual_form_type",
         lambda code: "10-K",
     )
 

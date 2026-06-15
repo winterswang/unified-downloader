@@ -1,12 +1,32 @@
 """适配器基类"""
 
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Protocol, runtime_checkable
 from pathlib import Path
 
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
+
+
+@runtime_checkable
+class USFormResolver(Protocol):
+    """协议：US adapter 公开暴露的 SEC form type 解析接口。
+
+    任何实现这两个方法的 adapter 都会被 `UnifiedDownloader` 当作可解析
+    US semantic form type 的目标 — 替代原先的 `hasattr(adapter, "_get_...")`
+    鸭子类型 + `# type: ignore[attr-defined]` 调用模式。
+
+    实现：见 `unified_downloader.adapters.m_stock.MStockAdapter`。
+    """
+
+    def get_annual_form_type(self, code: str) -> str:
+        """返回年报的 SEC 表格类型（'10-K' 或 '20-F'）"""
+        ...
+
+    def get_quarterly_form_type(self, code: str) -> str:
+        """返回季报的 SEC 表格类型（'10-Q' 或 '6-K'）"""
+        ...
 
 
 class BaseStockAdapter(ABC):
