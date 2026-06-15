@@ -57,3 +57,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+# Runtime local state
+DAILY_LOG.md
+data/
