@@ -220,7 +220,7 @@ def download_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "f1", "424b4", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -387,7 +387,7 @@ def search_group():
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "f1", "424b4", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",
@@ -456,7 +456,7 @@ def search_list(cli_ctx, code, year, type, market, limit):
     "--type",
     "-t",
     type=click.Choice(
-        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "6k", "8k", "20f"],
+        ["annual_report", "interim_report", "quarterly", "q1_report", "q3_report", "prospectus", "10k", "10q", "s1", "s1a", "f1", "424b4", "6k", "8k", "20f"],
         case_sensitive=False,
     ),
     default="annual_report",

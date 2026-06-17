@@ -420,6 +420,8 @@ class UnifiedDownloader:
             "8_k": "8K",
             "s1": "S1",
             "s1a": "S1A",
+            "f1": "F1",
+            "424b4": "424B4",
             "prospectus": "S1",
         }
         return labels.get(normalized, document_type.replace("-", "").upper())

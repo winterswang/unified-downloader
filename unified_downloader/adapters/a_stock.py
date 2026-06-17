@@ -93,6 +93,97 @@ class CninfoAPI:
 
         return None
 
+    # 全文检索 API 端点
+    FULLTEXT_SEARCH_URL = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
+
+    @staticmethod
+    def search_fulltext(
+        keyword: str,
+        se_date: Optional[str] = None,
+        page_num: int = 1,
+        page_size: int = 30,
+        http_client: Optional[HTTPClient] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        巨潮资讯全文检索
+
+        POST http://www.cninfo.com.cn/new/hisAnnouncement/query
+
+        Args:
+            keyword: 搜索关键词，如 "贵州茅台 招股说明书"
+            se_date: 日期范围 "YYYY-MM-DD~YYYY-MM-DD"，None 表示不限
+            page_num: 页码
+            page_size: 每页条数
+            http_client: HTTP 客户端，None 则创建临时实例
+
+        Returns:
+            标准化文档列表:
+            [{title, date, file_size, url, source: "cninfo", code, name}, ...]
+        """
+        import requests
+        from datetime import datetime
+
+        if http_client is None:
+            session = requests.Session()
+        else:
+            session = http_client.session
+
+        payload = {
+            "searchkey": keyword,
+            "pageNum": page_num,
+            "pageSize": page_size,
+        }
+        if se_date:
+            payload["seDate"] = se_date
+
+        try:
+            if http_client is not None:
+                resp = http_client.post(
+                    CninfoAPI.FULLTEXT_SEARCH_URL,
+                    data=payload,
+                    headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                )
+            else:
+                resp = session.post(
+                    CninfoAPI.FULLTEXT_SEARCH_URL,
+                    data=payload,
+                    headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                    timeout=30,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.error(f"全文检索失败: {e}")
+            return []
+
+        announcements = data.get("announcements") or []
+        results = []
+        for item in announcements:
+            # announcementTime 是 int 毫秒时间戳
+            ts = item.get("announcementTime", 0)
+            try:
+                dt = datetime.fromtimestamp(ts / 1000)
+                date_str = dt.strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                date_str = ""
+
+            adjunct_url = item.get("adjunctUrl", "")
+            url = ""
+            if adjunct_url:
+                url = f"https://static.cninfo.com.cn/{adjunct_url}"
+
+            results.append({
+                "title": item.get("announcementTitle", ""),
+                "date": date_str,
+                "file_size": item.get("adjunctSize", 0),
+                "url": url,
+                "source": "cninfo",
+                "code": item.get("secCode", ""),
+                "name": item.get("secName", ""),
+            })
+
+        return results
+
     @staticmethod
     def download_pdf(pdf_url: str, save_path: str, http_client: HTTPClient) -> bool:
         """
@@ -170,6 +261,10 @@ class AStockAdapter(BaseStockAdapter):
             return self._download_quarterly_report(
                 code, year, datasource, checkpoint, on_progress
             )
+        elif doc_type_lower in ["prospectus", "招股说明书", "招股书", "s1"]:
+            return self._download_prospectus(
+                code, datasource, checkpoint, on_progress
+            )
         else:
             return self._download_annual_report(
                 code, year, datasource, checkpoint, on_progress
@@ -242,6 +337,106 @@ class AStockAdapter(BaseStockAdapter):
                 code, year, "三季报", "quarterly_report", checkpoint, on_progress
             )
         return result
+
+    def _download_prospectus(
+        self,
+        code: str,
+        datasource: Optional[DataSource],
+        checkpoint: Optional[Dict[str, Any]],
+        on_progress: Optional[Callable],
+    ) -> DownloadResult:
+        """下载招股说明书
+
+        使用巨潮资讯全文检索 API 搜索招股书，按时间倒序取最新一份下载。
+        """
+        symbol = code.strip().upper()
+        if symbol.startswith("SH"):
+            symbol = symbol[2:]
+        elif symbol.startswith("SZ"):
+            symbol = symbol[2:]
+
+        # 搜索招股书：用代码+招股说明书关键词
+        keyword = f"{symbol} 招股说明书"
+        self._rate_limiter.wait()
+        try:
+            docs = CninfoAPI.search_fulltext(
+                keyword=keyword,
+                http_client=self._http_client,
+            )
+        except Exception as e:
+            logger.error(f"搜索招股书失败: {e}")
+            return DownloadResult(
+                success=False,
+                error_code="SEARCH_ERROR",
+                error_message=f"搜索招股书失败: {e}",
+            )
+
+        if not docs:
+            return DownloadResult(
+                success=False,
+                error_code="NO_FILINGS_FOUND",
+                error_message=f"未找到 {symbol} 的招股说明书",
+            )
+
+        # 选最佳匹配：优先标题含"招股说明书"且不含"附录/摘要/意见"的
+        primary = [
+            d for d in docs
+            if "招股说明书" in d["title"]
+            and not any(kw in d["title"] for kw in ["附录", "摘要", "意见", "补充"])
+        ]
+        candidates = primary if primary else docs
+
+        # 在候选中选文件最大的（通常是完整版招股书）
+        doc = max(candidates, key=lambda d: d.get("file_size", 0))
+
+        url = doc.get("url", "")
+        if not url:
+            return DownloadResult(
+                success=False,
+                error_code="URL_NOT_FOUND",
+                error_message="无法获取招股书 PDF 下载链接",
+            )
+
+        # 解析年份
+        file_year = None
+        date_str = doc.get("date", "")
+        if date_str:
+            try:
+                file_year = int(date_str[:4])
+            except (ValueError, TypeError):
+                pass
+
+        # 构建保存路径
+        file_path = self._build_file_path(
+            symbol.zfill(6), file_year, "PROSPECTUS", ".PDF"
+        )
+
+        # 下载 PDF
+        try:
+            result = self._http_client.download_file(
+                url, file_path, on_progress=on_progress, checkpoint=checkpoint
+            )
+
+            return DownloadResult(
+                success=True,
+                file_path=result["file_path"],
+                file_size=result["file_size"],
+                source="cninfo",
+                metadata={
+                    "symbol": symbol,
+                    "title": doc.get("title", ""),
+                    "date": doc.get("date", ""),
+                    "name": doc.get("name", ""),
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"下载招股书失败: {e}")
+            return DownloadResult(
+                success=False,
+                error_code="DOWNLOAD_ERROR",
+                error_message=f"下载招股书失败: {e}",
+            )
 
     def _download_report(
         self,
@@ -387,6 +582,19 @@ class AStockAdapter(BaseStockAdapter):
                 category = "一季报"
             elif "q3" in doc_type_lower:
                 category = "三季报"
+            elif "prospectus" in doc_type_lower or "招股" in doc_type_lower:
+                # 招股书使用全文检索 API
+                self._rate_limiter.wait()
+                keyword = f"{symbol} 招股说明书"
+                if year:
+                    se_date = f"{year}-01-01~{year}-12-31"
+                else:
+                    se_date = None
+                return CninfoAPI.search_fulltext(
+                    keyword=keyword,
+                    se_date=se_date,
+                    http_client=self._http_client,
+                )
 
         self._rate_limiter.wait()
         try:
