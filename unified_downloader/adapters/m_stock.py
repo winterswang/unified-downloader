@@ -1,5 +1,6 @@
 """美股适配器 - 使用 edgartools (主) + sec-api (兜底)"""
 
+import asyncio
 import logging
 import os
 import time
@@ -136,8 +137,8 @@ class MStockAdapter(BaseStockAdapter):
             return self._download_10k(code, year, datasource, checkpoint, on_progress, **kwargs)
         elif doc_type_lower in ["10q", "ten_q"]:
             return self._download_10q(code, year, datasource, checkpoint, on_progress, **kwargs)
-        elif doc_type_lower in ["s1", "s1a", "prospectus"]:
-            return self._download_s1(
+        elif doc_type_lower in ["s1", "s1a", "f1", "424b4", "prospectus"]:
+            return self._download_prospectus(
                 code, document_type, datasource, checkpoint, on_progress
             )
         elif doc_type_lower in ["6k", "8k"]:
@@ -169,8 +170,8 @@ class MStockAdapter(BaseStockAdapter):
             return await self._async_download_10q(
                 http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
-        elif doc_type_lower in ["s1", "s1a", "prospectus"]:
-            return await self._async_download_s1(
+        elif doc_type_lower in ["s1", "s1a", "f1", "424b4", "prospectus"]:
+            return await self._async_download_prospectus(
                 http_client, code, document_type, datasource, checkpoint, on_progress
             )
         elif doc_type_lower in ["6k", "8k"]:
@@ -509,7 +510,7 @@ class MStockAdapter(BaseStockAdapter):
             logger.debug(f"FPI check failed for {code}: {e}, defaulting to 10-Q")
         return "10-Q"
 
-    def _download_s1(
+    def _download_prospectus(
         self,
         code: str,
         document_type: str,
@@ -517,9 +518,47 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载S-1招股说明书"""
-        form_type = "S-1" if document_type.lower() == "s1" else "S-1/A"
-        return self._download_form(code, form_type, None, checkpoint, on_progress)
+        """下载美股招股说明书
+
+        搜索策略（级联）：
+        1. 用户明确指定 form type → 直接用
+        2. prospectus/s1/s1a → S-1 → F-1 → 424B4 依次尝试
+        """
+        doc_lower = document_type.lower()
+
+        # 用户明确指定 form type
+        form_map = {
+            "s1": "S-1",
+            "s1a": "S-1/A",
+            "f1": "F-1",
+            "424b4": "424B4",
+        }
+        if doc_lower in form_map:
+            return self._download_form(
+                code, form_map[doc_lower], None, checkpoint, on_progress
+            )
+
+        # prospectus: 级联搜索 S-1 → F-1 → 424B4
+        ticker = code.upper()
+        for form in ["S-1", "F-1", "424B4"]:
+            try:
+                filings = self._search_filings(ticker, form, None, size=1)
+                if filings:
+                    logger.info(
+                        f"找到 {ticker} 的 {form} 招股书"
+                    )
+                    return self._download_form(
+                        code, form, None, checkpoint, on_progress
+                    )
+            except Exception as e:
+                logger.debug(f"搜索 {ticker} {form} 失败: {e}")
+                continue
+
+        return DownloadResult(
+            success=False,
+            error_code="NO_FILINGS_FOUND",
+            error_message=f"未找到 {ticker} 的招股书（已尝试 S-1, F-1, 424B4）",
+        )
 
     def _download_6k(
         self,
@@ -832,7 +871,7 @@ class MStockAdapter(BaseStockAdapter):
         form_type = self.get_quarterly_form_type(code)
         return await self._async_download_form(http_client, code, form_type, year, checkpoint, on_progress)
 
-    async def _async_download_s1(
+    async def _async_download_prospectus(
         self,
         http_client: AsyncHTTPClient,
         code: str,
@@ -841,9 +880,11 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """异步下载S-1招股说明书"""
-        form_type = "S-1" if document_type.lower() == "s1" else "S-1/A"
-        return await self._async_download_form(http_client, code, form_type, None, checkpoint, on_progress)
+        """异步下载美股招股说明书（同步包装）"""
+        return await asyncio.to_thread(
+            self._download_prospectus,
+            code, document_type, datasource, checkpoint, on_progress
+        )
 
     async def _download_filing_async(
         self,

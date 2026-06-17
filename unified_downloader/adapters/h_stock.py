@@ -392,7 +392,11 @@ class HStockAdapter(BaseStockAdapter):
         return DownloadResult(
             success=False,
             error_code="NO_FILINGS_FOUND",
-            error_message=f"未找到 {stock_code} 的招股书（该股票可能未在港交所上市或提交招股书）",
+            error_message=(
+                f"未找到 {stock_code} 的招股书。"
+                f"该股票可能上市时间较早（>10年），招股书不在港交所披露易系统中，"
+                f"或该股票尚未在港交所上市。"
+            ),
         )
 
     @staticmethod
@@ -420,11 +424,16 @@ class HStockAdapter(BaseStockAdapter):
     ) -> DownloadResult:
         """从搜索结果文档下载文件"""
         file_link = doc.get("file_link", "")
-        if not file_link:
+        file_info = doc.get("file_info", "")
+        if not file_link or "多檔案" in file_info:
             return DownloadResult(
                 success=False,
-                error_code="URL_NOT_FOUND",
-                error_message="无法获取文档链接",
+                error_code="MULTI_FILE",
+                error_message=(
+                    "该招股书为多檔案类型，无法直接下载 PDF。"
+                    "请访问港交所披露易网页查看: "
+                    "https://www1.hkexnews.hk/search/titlesearch.xhtml"
+                ),
             )
 
         ext = ".pdf" if file_link.lower().endswith(".pdf") else ".html"

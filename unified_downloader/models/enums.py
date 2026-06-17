@@ -25,6 +25,8 @@ class DocumentType(str, Enum):
     TEN_Q = "10q"  # 美股10-Q季报
     S1 = "s1"  # 美股S-1招股书
     S1A = "s1a"  # 美股S-1A修正
+    F1 = "f1"  # 美股F-1外国公司招股书
+    F424B4 = "424b4"  # 美股424B4最终招股书（定价版）
     SIX_K = "6k"  # 美股外国公司6-K临时报告
     EIGHT_K = "8k"  # 美股8-K重大事件报告
     TWENTY_F = "20f"  # 美股外国公司20-F年报
