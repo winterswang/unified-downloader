@@ -36,8 +36,8 @@ class PDFTranslator:
         pdf_path: Path,
         target_lang: str = "zh",
         api_key: Optional[str] = None,
-        model: str = "MiniMax-M2.7",
-        base_url: str = "https://api.minimaxi.com/v1",
+        model: str = "minimax-m3",
+        base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3",
         qps: int = 4,
         no_dual: bool = True,
         output_dir: Optional[Path] = None,
@@ -67,13 +67,14 @@ class PDFTranslator:
             raise TranslationError(f"PDF文件不存在: {pdf_path}")
 
         # API Key: 由调用方从已加载的 config 传入，或从环境变量 fallback
+        # 已切 coding plan，优先 ARK_API_KEY，兼容旧 OPENAI_API_KEY
         if not api_key:
-            api_key = os.environ.get("OPENAI_API_KEY", "")
+            api_key = os.environ.get("ARK_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
 
         if not api_key:
             raise TranslationError(
                 "翻译API Key未配置，请在 config.yaml 设置 translate_api_key "
-                "或设置环境变量 OPENAI_API_KEY"
+                "或设置环境变量 ARK_API_KEY"
             )
 
         if output_dir is None:

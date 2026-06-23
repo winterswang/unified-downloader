@@ -68,8 +68,8 @@ class Config:
 
     # 翻译配置 (英文→中文)
     translate_api_key: Optional[str] = None
-    translate_model: str = "MiniMax-M2.7"
-    translate_base_url: str = "https://api.minimaxi.com/v1"
+    translate_model: str = "minimax-m3"
+    translate_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
     translate_enabled: bool = False
     translate_qps: int = 4
 
@@ -139,8 +139,8 @@ class Config:
             sec_user_agent=data.get("sec_user_agent"),
             edgar_identity=data.get("edgar_identity"),
             translate_api_key=data.get("translate_api_key"),
-            translate_model=data.get("translate_model", "MiniMax-M2.7"),
-            translate_base_url=data.get("translate_base_url", "https://api.minimaxi.com/v1"),
+            translate_model=data.get("translate_model", "minimax-m3"),
+            translate_base_url=data.get("translate_base_url", "https://ark.cn-beijing.volces.com/api/coding/v3"),
             translate_enabled=data.get("translate_enabled", False),
             translate_qps=data.get("translate_qps", 4),
         )
