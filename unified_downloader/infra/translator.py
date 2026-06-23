@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 _OUTPUT_PATH_PATTERN = re.compile(r"(?:Output|output|saved|Saved)\s+(?:to\s+)?[:=]?\s*(.+\.pdf)", re.IGNORECASE)
 
 
+def load_ark_api_key() -> str:
+    """Load ARK coding-plan API key from supported environment aliases."""
+    return os.environ.get("ARK_API_KEY", "") or os.environ.get("ARKCODE_API_KEY", "")
+
+
 def _file_hash(path: Path) -> str:
     """计算文件的 MD5 哈希（用于翻译缓存校验）"""
     h = hashlib.md5()
@@ -36,8 +41,8 @@ class PDFTranslator:
         pdf_path: Path,
         target_lang: str = "zh",
         api_key: Optional[str] = None,
-        model: str = "MiniMax-M2.7",
-        base_url: str = "https://api.minimaxi.com/v1",
+        model: str = "minimax-m3",
+        base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3",
         qps: int = 4,
         no_dual: bool = True,
         output_dir: Optional[Path] = None,
@@ -66,14 +71,15 @@ class PDFTranslator:
         if not pdf_path.exists():
             raise TranslationError(f"PDF文件不存在: {pdf_path}")
 
-        # API Key: 由调用方从已加载的 config 传入，或从环境变量 fallback
+        # API Key: 由调用方从已加载的 config 传入，或从环境变量 fallback。
+        # 已切 coding plan，仅使用 ARK_API_KEY/ARKCODE_API_KEY，避免把旧 OpenAI key 用到 ARK endpoint。
         if not api_key:
-            api_key = os.environ.get("OPENAI_API_KEY", "")
+            api_key = load_ark_api_key()
 
         if not api_key:
             raise TranslationError(
                 "翻译API Key未配置，请在 config.yaml 设置 translate_api_key "
-                "或设置环境变量 OPENAI_API_KEY"
+                "或设置环境变量 ARK_API_KEY/ARKCODE_API_KEY"
             )
 
         if output_dir is None:

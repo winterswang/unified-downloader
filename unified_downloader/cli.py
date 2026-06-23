@@ -782,7 +782,8 @@ def config_env(cli_ctx):
         ("EDGAR_IDENTITY", "edgartools身份标识 (email)"),
         ("SEC_API_KEY", "sec-api API密钥"),
         ("SEC_USER_AGENT", "SEC下载User-Agent"),
-        ("OPENAI_API_KEY", "翻译API密钥 (BabelDOC)"),
+        ("ARK_API_KEY", "翻译API密钥 (字节 coding plan / BabelDOC)"),
+        ("ARKCODE_API_KEY", "翻译API密钥备用别名 (字节 coding plan)"),
         ("DOWNLOAD_DIR", "下载目录"),
         ("CACHE_DIR", "缓存目录"),
     ]

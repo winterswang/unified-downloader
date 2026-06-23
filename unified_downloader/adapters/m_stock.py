@@ -49,8 +49,8 @@ class MStockAdapter(BaseStockAdapter):
         edgar_identity: Optional[str] = None,
         translate_enabled: bool = False,
         translate_api_key: Optional[str] = None,
-        translate_model: str = "MiniMax-M2.7",
-        translate_base_url: str = "https://api.minimaxi.com/v1",
+        translate_model: str = "minimax-m3",
+        translate_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3",
         translate_qps: int = 4,
     ):
         super().__init__(http_client, datasources)
