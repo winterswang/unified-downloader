@@ -654,6 +654,62 @@ class MStockAdapter(BaseStockAdapter):
         )
         return merged_path
 
+    def _embed_images_as_base64(self, html_path: Path, base_url: str, headers: Dict[str, str]):
+        """解析HTML中的相对路径图片，下载并嵌入为base64 data URI，保证单文件HTML自带所有图片。"""
+        import re
+        import base64
+        import mimetypes
+        from urllib.parse import urljoin
+        import requests
+
+        content = html_path.read_text(encoding="utf-8", errors="replace")
+        # 提取所有img标签的src属性
+        img_pattern = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+        
+        # 计算基础URL（当前HTML所在目录）
+        base_dir = base_url.rsplit("/", 1)[0] + "/"
+        
+        modified = False
+        for match in img_pattern.finditer(content):
+            img_src = match.group(1)
+            # 跳过已经是data URI/绝对URL/锚点的图片
+            if img_src.startswith(("data:", "http://", "https://", "#", "javascript:")):
+                continue
+            
+            # 构建完整图片URL
+            img_url = urljoin(base_dir, img_src)
+            try:
+                # 下载图片
+                self._rate_limiter.wait("edgar_download")
+                resp = requests.get(img_url, headers=headers, timeout=30)
+                if resp.status_code != 200:
+                    logger.debug(f"图片下载失败 {img_src}: HTTP {resp.status_code}")
+                    continue
+                
+                # 检测MIME类型
+                content_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
+                if not content_type:
+                    content_type, _ = mimetypes.guess_type(img_src)
+                    content_type = content_type or "image/jpeg"
+                
+                # 编码为base64
+                img_b64 = base64.b64encode(resp.content).decode("ascii")
+                data_uri = f"data:{content_type};base64,{img_b64}"
+                
+                # 替换src
+                old_tag = match.group(0)
+                new_tag = old_tag.replace(f'src="{img_src}"', f'src="{data_uri}"').replace(f"src='{img_src}'", f"src='{data_uri}'")
+                content = content.replace(old_tag, new_tag)
+                modified = True
+                logger.debug(f"嵌入图片: {img_src} → {len(img_b64)//1024}KB base64")
+                
+            except Exception as e:
+                logger.debug(f"嵌入图片失败 {img_src}: {e}")
+                continue
+        
+        if modified:
+            html_path.write_text(content, encoding="utf-8")
+
     def _download_filing(
         self,
         filing: Dict[str, Any],
@@ -742,6 +798,14 @@ class MStockAdapter(BaseStockAdapter):
                             )
                         except Exception as e:
                             logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
+
+                # 嵌入所有相对路径图片为base64 data URI，保证单文件HTML自带图片，上传IMA不会图挂
+                if downloaded_path.suffix.lower() in (".html", ".htm"):
+                    try:
+                        self._embed_images_as_base64(downloaded_path, link, headers)
+                        logger.debug(f"Embedded relative images into {downloaded_path.name}")
+                    except Exception as e:
+                        logger.warning(f"图片嵌入处理失败，保留原始HTML: {e}")
 
                 converted_to_pdf = False
                 if (
