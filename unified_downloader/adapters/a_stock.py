@@ -345,9 +345,10 @@ class AStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载招股说明书
+        """下载招股书（招股说明书/招股意向书）
 
-        使用巨潮资讯全文检索 API 搜索招股书，按时间倒序取最新一份下载。
+        使用巨潮资讯全文检索 API 搜索，优先招股说明书，没有则用招股意向书
+        （A股注册制下发行阶段只披露招股意向书，上市后才出正式招股说明书）
         """
         symbol = code.strip().upper()
         if symbol.startswith("SH"):
@@ -355,14 +356,29 @@ class AStockAdapter(BaseStockAdapter):
         elif symbol.startswith("SZ"):
             symbol = symbol[2:]
 
-        # 搜索招股书：用代码+招股说明书关键词
-        keyword = f"{symbol} 招股说明书"
+        # 搜索招股书：同时搜索「招股说明书」和「招股意向书」
         self._rate_limiter.wait()
+        all_docs = []
+        seen_urls = set()
+        from datetime import date as date_type
+        today = date_type.today()
+        start_year = today.year - 2
+        se_date = f"{start_year}-01-01~{today.isoformat()}"
+        
         try:
-            docs = CninfoAPI.search_fulltext(
-                keyword=keyword,
-                http_client=self._http_client,
-            )
+            # 优先搜索招股说明书，再搜索意向书
+            for kw_suffix in ["招股说明书", "招股意向书"]:
+                keyword = f"{symbol} {kw_suffix}"
+                docs = CninfoAPI.search_fulltext(
+                    keyword=keyword,
+                    se_date=se_date,
+                    http_client=self._http_client,
+                )
+                for doc in docs:
+                    url = doc.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_docs.append(doc)
         except Exception as e:
             logger.error(f"搜索招股书失败: {e}")
             return DownloadResult(
@@ -371,23 +387,38 @@ class AStockAdapter(BaseStockAdapter):
                 error_message=f"搜索招股书失败: {e}",
             )
 
-        if not docs:
+        if not all_docs:
             return DownloadResult(
                 success=False,
                 error_code="NO_FILINGS_FOUND",
-                error_message=f"未找到 {symbol} 的招股说明书",
+                error_message=f"未找到 {symbol} 的招股书（含招股意向书）",
             )
 
-        # 选最佳匹配：优先标题含"招股说明书"且不含"附录/摘要/意见"的
-        primary = [
-            d for d in docs
-            if "招股说明书" in d["title"]
-            and not any(kw in d["title"] for kw in ["附录", "摘要", "意见", "补充"])
-        ]
-        candidates = primary if primary else docs
+        # 选最佳匹配：优先完整版招股书/意向书，排除附录/摘要/提示性公告
+        # 优先级：招股说明书 > 招股意向书；完整版 > 附录/摘要/意见/提示公告
+        def score_doc(d):
+            title = d.get("title", "")
+            score = 0
+            if "招股说明书" in title:
+                score += 200
+            elif "招股意向书" in title:
+                score += 100
+            if not any(kw in title for kw in ["附录", "摘要", "意见", "补充", "提示性公告", "公告"]):
+                score += 50
+            # 优先文件大的（完整版）
+            score += d.get("file_size", 0) / 1024 / 1024  # 每MB加1分
+            return score
 
-        # 在候选中选文件最大的（通常是完整版招股书）
-        doc = max(candidates, key=lambda d: d.get("file_size", 0))
+        candidates = [
+            d for d in all_docs
+            if ("招股说明书" in d["title"] or "招股意向书" in d["title"])
+            and not any(kw in d["title"] for kw in ["附录", "摘要", "意见", "提示性公告"])
+        ]
+        if not candidates:
+            candidates = all_docs
+
+        # 选得分最高的
+        doc = max(candidates, key=score_doc)
 
         url = doc.get("url", "")
         if not url:
@@ -584,17 +615,37 @@ class AStockAdapter(BaseStockAdapter):
                 category = "三季报"
             elif "prospectus" in doc_type_lower or "招股" in doc_type_lower:
                 # 招股书使用全文检索 API
+                # A股注册制下：发行阶段先披露「招股意向书」，上市后才会发布「招股说明书」
+                # 两者内容几乎一致，意向书可以满足分析需求，需要同时搜索两个关键词
                 self._rate_limiter.wait()
-                keyword = f"{symbol} 招股说明书"
-                if year:
-                    se_date = f"{year}-01-01~{year}-12-31"
-                else:
-                    se_date = None
-                return CninfoAPI.search_fulltext(
-                    keyword=keyword,
-                    se_date=se_date,
-                    http_client=self._http_client,
-                )
+                results = []
+                seen_urls = set()
+                for kw_suffix in ["招股意向书", "招股说明书"]:
+                    keyword = f"{symbol} {kw_suffix}"
+                    if year:
+                        se_date = f"{year}-01-01~{year}-12-31"
+                    else:
+                        # 搜索最近2年（覆盖整个发行周期）
+                        from datetime import date as date_type
+                        today = date_type.today()
+                        start_year = today.year - 2
+                        se_date = f"{start_year}-01-01~{today.isoformat()}"
+                    docs = CninfoAPI.search_fulltext(
+                        keyword=keyword,
+                        se_date=se_date,
+                        http_client=self._http_client,
+                    )
+                    # 去重（同一URL不重复添加）
+                    for doc in docs:
+                        url = doc.get("url", "")
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            # 优先取招股说明书，意向书排在后面
+                            if "说明书" in doc.get("title", ""):
+                                results.insert(0, doc)
+                            else:
+                                results.append(doc)
+                return results
 
         self._rate_limiter.wait()
         try:
