@@ -128,10 +128,9 @@ def download_one(code, market, year, rtype, retries=3):
             time.sleep(delay)
         cmd = ["python3", "-m", "unified_downloader.cli", "download", "single",
                code, "-y", year, "-t", rtype, "-m", flag]
-        # 美股 SEC 原始文件通常是 HTML；IMA 文件上传不接受本地 HTML。
-        # PR #19 fixed cache-hit + --pdf so cache can be reused safely here.
-        if market == "US":
-            cmd.append("--pdf")
+        # IMA现在直接支持HTML上传，不需要转PDF；图片已自动内嵌为base64
+        # if market == "US":
+        #     cmd.append("--pdf")
         rc, out, err = run(cmd, timeout=180 if market == "US" else 120)
         if rc != 0:
             log.warning("  download command failed rc=%s cmd=%s stdout=%s stderr=%s",
@@ -141,9 +140,10 @@ def download_one(code, market, year, rtype, retries=3):
         if rc == 0 and fpath and fpath.exists():
             fsize = fpath.stat().st_size
             log.info("  Downloaded: %s (%s KB)", fpath.name, fsize//1024)
-            if market == "US" and fpath.suffix.lower() not in (".pdf",):
-                log.error("  US download did not produce PDF: %s", fpath)
-                return None
+            # IMA supports HTML directly; images are already embedded as base64
+            # if market == "US" and fpath.suffix.lower() not in (".pdf",):
+            #     log.error("  US download did not produce PDF: %s", fpath)
+            #     return None
             return fpath
         combined = (out+err).lower()
         if any(kw in combined for kw in ["not found","no document","no data","无数据","no matching","暂无"]):
