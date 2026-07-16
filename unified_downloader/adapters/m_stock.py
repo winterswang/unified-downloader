@@ -355,22 +355,39 @@ class MStockAdapter(BaseStockAdapter):
         搜索SEC filings (优先edgartools，失败则sec-api)
 
         支持速率限制和重试逻辑
+
+        加 timing log (2026-07-16, plan: earnings-download-failure-handling)：
+        - 记录 edgar init / search / sec_api 各阶段耗时
+        - 解决“downloader 120s 讴 “unknown error” 问题：能定位是哪一步慢
         """
         # 应用速率限制
         self._rate_limiter.wait("edgar_search")
         self._rate_limiter.wait("sec_api_search")
 
         last_error = None
+        _t_search = time.monotonic()
 
         # 优先使用edgartools (免费)，带重试
         for attempt in range(self.MAX_RETRIES):
             try:
-                if self._init_edgar():
-                    return self._search_edgar(ticker, form_type, year, size)
+                _t_init = time.monotonic()
+                init_ok = self._init_edgar()
+                _dt_init = time.monotonic() - _t_init
+                if init_ok:
+                    _t_edgar = time.monotonic()
+                    results = self._search_edgar(ticker, form_type, year, size)
+                    _dt_edgar = time.monotonic() - _t_edgar
+                    logger.info(
+                        f"[m_stock timing] search edgar ok: ticker={ticker} form={form_type} "
+                        f"year={year} init={_dt_init:.2f}s search={_dt_edgar:.2f}s "
+                        f"results={len(results)} total={time.monotonic()-_t_search:.2f}s"
+                    )
+                    return results
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"edgartools搜索失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}"
+                    f"edgartools搜索失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e} "
+                    f"[m_stock timing] elapsed={time.monotonic()-_t_search:.2f}s"
                 )
                 if attempt < self.MAX_RETRIES - 1:
                     time.sleep(self.RETRY_BACKOFF * (2**attempt))
@@ -587,18 +604,24 @@ class MStockAdapter(BaseStockAdapter):
         
         Returns:
             合并后的HTML文件路径
+
+        加 timing log (2026-07-16, plan: earnings-download-failure-handling)：
+        - 记录每个 exhibit 下载耗时
+        - 超时可以定位是哪条 6-K 的哪个 exhibit 卡
         """
+        _t_merge_start = time.monotonic()
         exhibit_files = [main_file]  # Start with the cover
-        
+
         for i, ex in enumerate(exhibits):
             ex_url = ex.get("url", "")
             ex_desc = ex.get("description", f"exhibit_{i}")
             if not ex_url:
                 continue
-            
+
             # Build exhibit file path
             ex_path = main_file.parent / f"{ticker}_{file_year}_{form_type}_ex{i}.html"
-            
+
+            _t_ex = time.monotonic()
             try:
                 self._rate_limiter.wait("edgar_download")
                 logger.info(f"Downloading 6-K exhibit {i}: {ex_desc[:80]}")
@@ -606,13 +629,30 @@ class MStockAdapter(BaseStockAdapter):
                 ex_result = self._http_client.download_file(
                     url=ex_url, file_path=str(ex_path), headers=headers
                 )
+                _dt_ex = time.monotonic() - _t_ex
                 if os.path.exists(str(ex_path)) and os.path.getsize(str(ex_path)) > 100:
                     exhibit_files.append(ex_path)
-                    logger.info(f"  → {ex_path} ({os.path.getsize(str(ex_path))} bytes)")
+                    logger.info(
+                        f"  → {ex_path} ({os.path.getsize(str(ex_path))} bytes) "
+                        f"[m_stock timing] exhibit[{i}] {ex_desc[:30]}={_dt_ex:.2f}s"
+                    )
                 else:
-                    logger.debug(f"  → Exhibit {i} too small or missing, skipped")
+                    logger.debug(
+                        f"  → Exhibit {i} too small or missing, skipped "
+                        f"[m_stock timing] exhibit[{i}]={_dt_ex:.2f}s"
+                    )
             except Exception as e:
-                logger.warning(f"  → Exhibit {i} download failed: {e}")
+                _dt_ex = time.monotonic() - _t_ex
+                logger.warning(
+                    f"  → Exhibit {i} download failed: {e} "
+                    f"[m_stock timing] exhibit[{i}]={_dt_ex:.2f}s"
+                )
+
+        _dt_total = time.monotonic() - _t_merge_start
+        logger.info(
+            f"[m_stock timing] _merge_6k_exhibits done: "
+            f"{len(exhibit_files)-1}/{len(exhibits)} exhibits ok total={_dt_total:.2f}s"
+        )
         
         if len(exhibit_files) == 1:
             return main_file  # No exhibits were downloaded
@@ -655,60 +695,93 @@ class MStockAdapter(BaseStockAdapter):
         return merged_path
 
     def _embed_images_as_base64(self, html_path: Path, base_url: str, headers: Dict[str, str]):
-        """解析HTML中的相对路径图片，下载并嵌入为base64 data URI，保证单文件HTML自带所有图片。"""
+        """解析HTML中的相对路径图片，下载并嵌入为base64 data URI，保证单文件HTML自带所有图片。
+
+        加并发超时隔离 (2026-07-16, plan: earnings-download-failure-handling)：
+        - 原始实现对每张图逐个下载，ASML 6-K 主页有 30+ 张 logo/装饰图
+          每张都 30s timeout，总体 15+ 分钟，下载阶段必 hang
+        - 修复：ThreadPoolExecutor 并发下载 + 整体 timeout 20s
+        - 失败的图片原样保留相对路径（不会用 base64 替代），下次再试
+        """
         import re
         import base64
         import mimetypes
         from urllib.parse import urljoin
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
         import requests
 
+        _t_start = time.monotonic()
+        _EMBED_TIMEOUT_S = 20  # 整体 embed 不能超过 20s
+
         content = html_path.read_text(encoding="utf-8", errors="replace")
-        # 提取所有img标签的src属性
         img_pattern = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
-        
-        # 计算基础URL（当前HTML所在目录）
+
         base_dir = base_url.rsplit("/", 1)[0] + "/"
-        
-        modified = False
+
+        # 收集所有需要下载的图片
+        tasks = []
         for match in img_pattern.finditer(content):
             img_src = match.group(1)
-            # 跳过已经是data URI/绝对URL/锚点的图片
             if img_src.startswith(("data:", "http://", "https://", "#", "javascript:")):
                 continue
-            
-            # 构建完整图片URL
             img_url = urljoin(base_dir, img_src)
+            tasks.append((match, img_src, img_url))
+
+        if not tasks:
+            return
+
+        # 并发下载，每张图 8s timeout
+        def fetch_one(args):
+            match, img_src, img_url = args
             try:
-                # 下载图片
-                self._rate_limiter.wait("edgar_download")
-                resp = requests.get(img_url, headers=headers, timeout=30)
+                resp = requests.get(img_url, headers=headers, timeout=8)
                 if resp.status_code != 200:
-                    logger.debug(f"图片下载失败 {img_src}: HTTP {resp.status_code}")
-                    continue
-                
-                # 检测MIME类型
+                    return (match, img_src, None, None, f"HTTP {resp.status_code}")
                 content_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
                 if not content_type:
                     content_type, _ = mimetypes.guess_type(img_src)
                     content_type = content_type or "image/jpeg"
-                
-                # 编码为base64
                 img_b64 = base64.b64encode(resp.content).decode("ascii")
-                data_uri = f"data:{content_type};base64,{img_b64}"
-                
-                # 替换src
-                old_tag = match.group(0)
-                new_tag = old_tag.replace(f'src="{img_src}"', f'src="{data_uri}"').replace(f"src='{img_src}'", f"src='{data_uri}'")
-                content = content.replace(old_tag, new_tag)
-                modified = True
-                logger.debug(f"嵌入图片: {img_src} → {len(img_b64)//1024}KB base64")
-                
+                return (match, img_src, content_type, img_b64, None)
             except Exception as e:
-                logger.debug(f"嵌入图片失败 {img_src}: {e}")
-                continue
-        
+                return (match, img_src, None, None, str(e))
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_task = {executor.submit(fetch_one, t): t for t in tasks}
+            try:
+                for fut in as_completed(future_to_task, timeout=_EMBED_TIMEOUT_S):
+                    try:
+                        result = fut.result(timeout=1)
+                    except FuturesTimeout:
+                        continue
+                    except Exception:
+                        continue
+                    if result:
+                        match, img_src, content_type, img_b64, err = result
+                        if img_b64 is not None:
+                            results[img_src] = (match, content_type, img_b64)
+            except FuturesTimeout:
+                logger.warning(
+                    f"[m_stock timing] _embed_images_as_base64 overall timeout {_EMBED_TIMEOUT_S}s, "
+                    f"embedded {len(results)}/{len(tasks)}"
+                )
+
+        # 替换 src
+        modified = False
+        for img_src, (match, content_type, img_b64) in results.items():
+            data_uri = f"data:{content_type};base64,{img_b64}"
+            old_tag = match.group(0)
+            new_tag = old_tag.replace(f'src="{img_src}"', f'src="{data_uri}"').replace(f"src='{img_src}'", f"src='{data_uri}'")
+            content = content.replace(old_tag, new_tag)
+            modified = True
+
         if modified:
             html_path.write_text(content, encoding="utf-8")
+        logger.info(
+            f"[m_stock timing] _embed_images_as_base64 done: "
+            f"{len(results)}/{len(tasks)} images embedded total={time.monotonic()-_t_start:.2f}s"
+        )
 
     def _download_filing(
         self,
