@@ -873,12 +873,22 @@ class MStockAdapter(BaseStockAdapter):
                             logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
 
                 # 嵌入所有相对路径图片为base64 data URI，保证单文件HTML自带图片，上传IMA不会图挂
+                # 2026-07-21 fix: 招股书 (S-1/F-1/424B4 等) 跳过 embed —— 招股书图片
+                # 嵌 base64 后 8.5M → 51M，触发 IMA 后端不索引 body content。
+                # 招股书图片装饰性多、重要性低，跳过 embed 反而可用。
+                # 6-K/10-K/10-Q 仍保留 embed (图片一般是 logo/财务图，实用价值高)
                 if downloaded_path.suffix.lower() in (".html", ".htm"):
-                    try:
-                        self._embed_images_as_base64(downloaded_path, link, headers)
-                        logger.debug(f"Embedded relative images into {downloaded_path.name}")
-                    except Exception as e:
-                        logger.warning(f"图片嵌入处理失败，保留原始HTML: {e}")
+                    if form_type in self._PROSPECTUS_FORMS:
+                        logger.info(
+                            f"[m_stock] 招股书 {form_type} 跳过 embed base64: {downloaded_path.name} "
+                            f"原因=避免文件膨胀触发 IMA 不索引"
+                        )
+                    else:
+                        try:
+                            self._embed_images_as_base64(downloaded_path, link, headers)
+                            logger.debug(f"Embedded relative images into {downloaded_path.name}")
+                        except Exception as e:
+                            logger.warning(f"图片嵌入处理失败，保留原始HTML: {e}")
 
                 converted_to_pdf = False
                 if (
@@ -1159,6 +1169,13 @@ class MStockAdapter(BaseStockAdapter):
         "s1": "S-1",
         "s1a": "S-1/A",
     }
+
+    # 招股书 form 类型集合（不嵌 base64 图片，避免 IMA 不索引大文件）
+    # 招股书 (S-1/F-1/424B4) 通常含 30+ 张 logo/财务图表装饰图，
+    # 嵌 base64 后文件膨胀 6x+ (8.5M → 51M)，
+    # 触发 IMA 后端不索引 body content（仅 record 元数据）
+    # 招股书图片重要性低，跳过 embed 直接传主 HTML 即可
+    _PROSPECTUS_FORMS = frozenset({"S-1", "S-1/A", "F-1", "F-1/A", "424B4", "424B3", "424B5"})
 
     @classmethod
     def _normalize_form_type(cls, form_type: str) -> str:
