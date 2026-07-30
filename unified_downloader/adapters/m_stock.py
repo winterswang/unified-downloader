@@ -833,8 +833,14 @@ class MStockAdapter(BaseStockAdapter):
         else:
             from unified_downloader.core.config import get_default_config
             cfg = get_default_config()
+            # W36: 以前用 `os.environ.get("USER") + "..."`, 如果 USER env 在
+            # 子进程里被 strip (e.g. OpenClaw cron wrapper, systemd unit),
+            # os.environ.get("USER") 返回 None → None + str → TypeError.
+            # META 26Q2 7-29 早上报这个错, download_status=FAILED.
+            # 修: `or "Unknown"` 兜底, 跟 m_stock 其他 getattr 模式一致.
+            user = os.environ.get("USER") or "Unknown"
             sec_ua = cfg.sec_user_agent or os.environ.get(
-                "SEC_USER_AGENT", os.environ.get("USER") + "/contact@example.com Research Tool/1.0"
+                "SEC_USER_AGENT", f"{user}/contact@example.com Research Tool/1.0"
             )
         headers = {
             "User-Agent": sec_ua,
