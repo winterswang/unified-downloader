@@ -9,6 +9,7 @@ class Market(str, Enum):
     A = "a"  # A股
     M = "m"  # 美股
     H = "h"  # 港股
+    E = "e"  # W36: 欧股 (Euronext Paris/Amsterdam/Milan + Frankfurt)
     UNKNOWN = "unknown"
 
 
