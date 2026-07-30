@@ -95,3 +95,33 @@ def test_unified_downloader_wires_market_e():
     src = open(UnifiedDownloader.__module__.replace(".", "/") + ".py").read()
     assert "Market.E:" in src, "UnifiedDownloader must dispatch Market.E"
     assert "EuStockAdapter(" in src, "UnifiedDownloader must instantiate EuStockAdapter"
+
+
+def test_detect_market_recognises_eu_tickers():
+    """W36 PR #50a follow-up: _detect_market must identify EU ticker format.
+
+    EU tickers are 1-5 uppercase letters + '.' + 2-3 uppercase letters
+    (e.g. RMS.PA, MC.PA, ASML.AS, RACE.MI, SAP.DE). Without this rule,
+    -m e demo (which passes RMS.PA through _detect_market) raises
+    MarketUnrecognizedError before the EU adapter is even invoked.
+    """
+    import re
+
+    # Read the pattern from the source so the test stays in sync if the
+    # regex is tightened later.
+    from unified_downloader.core.downloader import UnifiedDownloader
+    src = open(UnifiedDownloader.__module__.replace(".", "/") + ".py").read()
+    # Extract the EU regex line.
+    import re as _re
+    m = _re.search(r"r\"(\^\[A-Z\]\{1,5\}\\\.\[A-Z\]\{2,3\}\$)\"", src)
+    assert m, "EU ticker regex must be present in UnifiedDownloader._detect_market"
+    pattern = m.group(1)
+    for code in ["RMS.PA", "MC.PA", "ASML.AS", "RACE.MI", "OR.PA", "SAP.DE", "ENI.MI"]:
+        assert _re.match(pattern, code), f"{code} should match the EU pattern"
+    # Sanity: a malformed EU ticker should NOT match.
+    assert not _re.match(pattern, "RMS.P"), "RMS.P is too short"
+    assert not _re.match(pattern, "RMS.PAAX"), "RMS.PAAX is too long"
+    # And existing CN / HK / US patterns must not collide.
+    assert not _re.match(pattern, "600519"), "CN codes must not match EU"
+    assert not _re.match(pattern, "AAPL"), "US tickers must not match EU"
+    assert not _re.match(pattern, "00700"), "HK codes must not match EU"

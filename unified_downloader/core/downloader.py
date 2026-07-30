@@ -578,6 +578,13 @@ class UnifiedDownloader:
         if re.match(r"^[0-9]{10}$", code):
             return Market.M
 
+        # W36 PR #50a: 欧股 ticker (Hermes RMS.PA, LVMH MC.PA, ASML ASML.AS,
+        # Ferrari RACE.MI) - 格式 1-5 个大写字母 + '.' + 2-3 个大写字母
+        # (交易所后缀: .PA Paris / .AS Amsterdam / .MI Milan / .DE Frankfurt
+        #  / .LS Lisbon / .MA Madrid / .BR Brussels).
+        if re.match(r"^[A-Z]{1,5}\.[A-Z]{2,3}$", code):
+            return Market.E
+
         raise MarketUnrecognizedError(code)
 
     def _generate_task_id(

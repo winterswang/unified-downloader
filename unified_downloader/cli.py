@@ -229,7 +229,7 @@ def download_group():
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["a", "m", "h", "auto"], case_sensitive=False),
+    type=click.Choice(["a", "m", "h", "e", "auto"], case_sensitive=False),
     default="auto",
     help="市场 (auto=自动识别)",
 )
@@ -333,7 +333,7 @@ def download_batch(cli_ctx, file, output, workers, errors, verbose):
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["a", "h", "m"], case_sensitive=False),
+    type=click.Choice(["a", "h", "m", "e"], case_sensitive=False),
     default="a",
     help="市场",
 )
@@ -345,6 +345,9 @@ def download_demo(cli_ctx, market, pdf):
         "a": {"code": "000001", "year": 2024, "type": "annual_report"},
         "h": {"code": "00700", "year": 2025, "type": "annual_report"},
         "m": {"code": "AAPL", "year": 2024, "type": "10k"},
+        # W36 PR #50a: EU example — Hermes RMS.PA, will raise NotImplementedError
+        # until PR #50b wires up the AMF / Euronext source.
+        "e": {"code": "RMS.PA", "year": 2024, "type": "annual_report"},
     }
 
     config = demo_configs[market]
@@ -396,7 +399,7 @@ def search_group():
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["a", "m", "h", "auto"], case_sensitive=False),
+    type=click.Choice(["a", "m", "h", "e", "auto"], case_sensitive=False),
     default="auto",
     help="市场",
 )
@@ -465,7 +468,7 @@ def search_list(cli_ctx, code, year, type, market, limit):
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["a", "m", "h", "auto"], case_sensitive=False),
+    type=click.Choice(["a", "m", "h", "e", "auto"], case_sensitive=False),
     default="auto",
     help="市场",
 )
@@ -507,7 +510,7 @@ def file_group():
 
 
 @file_group.command("list")
-@click.option("--market", "-m", type=click.Choice(["a", "m", "h"]), help="按市场筛选")
+@click.option("--market", "-m", type=click.Choice(["a", "m", "h", "e"]), help="按市场筛选")
 @click.option("--type", "-t", help="按文档类型筛选")
 @click.option("--limit", "-l", type=int, default=20, help="显示数量")
 @click.option("--format", "-f", type=click.Choice(["table", "json"]), default="table")
@@ -521,7 +524,7 @@ def file_list(cli_ctx, market, type, limit, format):
         return
 
     files = []
-    for m in ["a", "h", "m"]:
+    for m in ["a", "h", "m", "e"]:
         m_dir = download_dir / m
         if not m_dir.exists():
             continue
@@ -695,7 +698,7 @@ def status(cli_ctx, verbose):
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["a", "m", "h", "all"]),
+    type=click.Choice(["a", "m", "h", "e", "all"]),
     default="all",
     help="重置指定市场或全部",
 )
