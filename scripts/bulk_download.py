@@ -50,7 +50,6 @@ log = logging.getLogger("bulk")
 # ── 路径常量 ──
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = PROJECT_ROOT / "data" / "bulk_state"
-ADR_MAP_FILE = PROJECT_ROOT / "config" / "adr_map.json"
 DEFAULT_IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
 IMA_SYNC_SCRIPT = Path(os.environ.get("IMA_SYNC_SCRIPT_PATH", DEFAULT_IMA_SYNC_SCRIPT))
 TZ_CN = timezone(timedelta(hours=8))
@@ -71,33 +70,14 @@ def run(cmd, timeout=120):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(PROJECT_ROOT))
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
-def load_adr_map():
-    return json.loads(ADR_MAP_FILE.read_text()) if ADR_MAP_FILE.exists() else {}
-
-def _us_key_variants(code):
-    """Return normalized lookup keys for US tickers with/without .US suffix."""
-    cu = code.upper()
-    base = cu[:-3] if cu.endswith(".US") else cu
-    return (cu, base, f"{base}.US")
-
-def _lookup_us_map(mapping, code):
-    for key in _us_key_variants(code):
-        if key in mapping:
-            return key, mapping[key]
-    return None, None
-
-def resolve_target(code, market, adr_map):
-    mkt = market.upper()
-    cu = code.upper()
-    if mkt == "US":
-        key, info = _lookup_us_map(adr_map.get("use_hk_source", {}), cu)
-        if info:
-            return info["hk_code"], "HK", True, False
-        key, info = _lookup_us_map(adr_map.get("use_sec_20f_only", {}), cu)
-        if info:
-            base = cu[:-3] if cu.endswith(".US") else cu
-            return base, "US", False, True
-    return code, mkt, False, False
+# W36: 复用 unified_downloader.utils.adr_map, 避免跟 m_stock 重复实现.
+# 老代码 (load_adr_map / _us_key_variants / _lookup_us_map / resolve_target)
+# 在 bulk_download 跟 m_stock 各自一份, 容易 drift.
+from unified_downloader.utils.adr_map import (
+    load_adr_map,        # noqa: F401  保留脚本级调用方
+    resolve_target,
+    is_adr_skipped,
+)
 
 def quarterly_search_market(is_adr_hk, is_20f, mkt_key):
     if is_adr_hk:
