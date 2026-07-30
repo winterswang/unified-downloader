@@ -195,6 +195,16 @@ class Config:
             return [
                 {"name": "hkex", "base_url": "https://www1.hkexnews.hk", "priority": 1},
             ]
+        elif market == Market.E:
+            # W36 PR #50a: EU skeleton. PR #50b will swap this for
+            # AMF (https://www.amf-france.org) + Euronext Paris URLs.
+            return [
+                {
+                    "name": "eu_skeleton",
+                    "base_url": "https://placeholder.unified-downloader/eu",
+                    "priority": 1,
+                },
+            ]
         return []
 
 

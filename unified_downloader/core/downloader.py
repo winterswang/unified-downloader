@@ -21,6 +21,7 @@ from unified_downloader.adapters import (
     AStockAdapter,
     MStockAdapter,
     HStockAdapter,
+    EuStockAdapter,
     BaseStockAdapter,
     USFormResolver,
 )
@@ -88,6 +89,10 @@ class UnifiedDownloader:
             ),
             Market.H: HStockAdapter(
                 self._http_client, self.config.get_datasources(Market.H)
+            ),
+            # W36 PR #50a: EU skeleton (PR #50b will add real download).
+            Market.E: EuStockAdapter(
+                self._http_client, self.config.get_datasources(Market.E)
             ),
         }
 
