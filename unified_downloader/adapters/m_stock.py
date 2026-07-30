@@ -482,8 +482,31 @@ class MStockAdapter(BaseStockAdapter):
         外国私人发行人(FPI)如中概股/ADR，年度用20-F
         美国本土公司用10-K
 
+        W36: edgartools Company() 对 OTC ADR (Hermes / LVMH 等) 抛
+        "Company not found" 之前根本到不了 is_foreign 判断, 所以单靠
+        edgartools FPI check 永远返回 10-K, 然后下载 10-K 又失败.
+        我们不修 edgartools, 而是看 adr_map.use_sec_20f_only: 命中 → 20-F
+        (即便 edgartools 找不到 ticker, 也至少让 m_stock 走对的 form,
+        错误信息变为 "20-F not found" 而不是 "10-K not found", 暴露真因).
+
+        use_hk_source (TCEHY/BEKE/HTHT/MNSO) 不在这里处理 — 这些 ticker
+        根本不该走 m_stock, 应在上层 dispatch 改走 h_stock. 这里是
+        SEC form type 决策, 不是 market 决策.
+
         作为 USFormResolver 协议成员被 UnifiedDownloader 跨模块调用。
         """
+        # W36: adr_map.use_sec_20f_only 优先, 因为 edgartools 对
+        # 不在 SEC EDGAR 的 OTC ADR 抛 "Company not found" 之前到不了
+        # is_foreign 判断. 即便 adr_map 命中, 后面 _download_form 仍
+        # 会失败, 但失败信息从 "primary=10k not found" 变成
+        # "primary=20f not found", 正确暴露真因 (不是 SEC 源).
+        from unified_downloader.utils.adr_map import load_adr_map, resolve_target
+        adr_map = load_adr_map()
+        _, _, _, is_20f_only = resolve_target(code, "US", adr_map)
+        if is_20f_only:
+            logger.info(f"{code} is in adr_map.use_sec_20f_only, using 20-F for annual report")
+            return "20-F"
+
         try:
             if self._init_edgar():
                 from edgar import Company
@@ -514,8 +537,20 @@ class MStockAdapter(BaseStockAdapter):
         外国私人发行人(Foreign Private Issuer)如中概股，季度用6-K
         美国本土公司使用10-Q
 
+        W36: 同 annual, adr_map.use_sec_20f_only 优先 → 6-K.
+        use_hk_source 不在这里处理 (跟 get_annual_form_type 同样理由:
+        market dispatch 是上层的事, 这里是 SEC form type 决策).
+
         作为 USFormResolver 协议成员被 UnifiedDownloader 跨模块调用。
         """
+        # W36: 跟 annual 同步, adr_map.use_sec_20f_only 优先.
+        from unified_downloader.utils.adr_map import load_adr_map, resolve_target
+        adr_map = load_adr_map()
+        _, _, _, is_20f_only = resolve_target(code, "US", adr_map)
+        if is_20f_only:
+            logger.info(f"{code} is in adr_map.use_sec_20f_only, using 6-K for quarterly report")
+            return "6-K"
+
         try:
             if self._init_edgar():
                 from edgar import Company
