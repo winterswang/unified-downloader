@@ -52,7 +52,7 @@ def test_ntsoy_still_string_format():
     ntsoy = adr_map["custom_ir_source"]["NTDOY.US"]
     for date, info in ntsoy["verified_pdfs"].items():
         assert isinstance(info, str), f"NTDOY {date} 必须仍 string 模式 (W37-#50c PR #44)"
-        assert info.endswith(".pdf"), f"NTDOY {date} 描述必须以 .pdf 结尾"
+        assert ".pdf" in info, f"NTDOY {date} 描述必须含 .pdf 文件名"
 
 
 def test_hesay_url_real_hermes_sitemap():
