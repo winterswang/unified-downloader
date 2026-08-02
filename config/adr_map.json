@@ -39,6 +39,28 @@
         "2025-02-05": "250205e.pdf (FY25 Q3 detailed, 210 KB)",
         "2026-05-08": "260508e.pdf (FY26 Q4, 922 KB)"
       }
+    },
+    "HESAY.US": {
+      "name": "爱马仕(ADR) Hermès International",
+      "ir_base_url": "https://assets-finance.hermes.com/s3fs-public/node/pdf_file",
+      "sitemap_pdfs": "https://finance.hermes.com/sitemap-pdf.xml",
+      "lang": "en",
+      "fy_end_month": 12,
+      "publish_dates": {
+        "URD": "03-XX"
+      },
+      "verified_pdfs": {
+        "2025-03-28": {
+          "url": "https://assets-finance.hermes.com/s3fs-public/node/pdf_file/2025-05/1746455904/250328_hermes_urd2024_en.pdf",
+          "size": "14.7 MB",
+          "note": "URD 2024 EN (Universal Registration Document 2024, 20 pages preview via web_fetch)"
+        },
+        "2026-03-20": {
+          "url": "https://assets-finance.hermes.com/s3fs-public/node/pdf_file/2026-04/1777391712/260320_hermes_urd2025_en.pdf?VersionId=jE9NgndClrtsqa.kJW0uyG8NRg4SFCVU",
+          "size": "20.2 MB",
+          "note": "URD 2025 EN"
+        }
+      }
     }
   },
 

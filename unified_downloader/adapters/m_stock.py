@@ -526,13 +526,23 @@ class MStockAdapter(BaseStockAdapter):
         # W37-#50c: 优先 verified_pdfs 匹配的 (YYMMDD -> URL), 跟
         # 7-19 港股 source 同样“公开 PDF 直链 + 命名规则推断” 模式.
         # 按 year 过滤: year=None 走最新一个; year=2024 只试 2024 公布日.
+        # W37-#50b: verified_pdfs value 支持两种格式:
+        #   - str: 跟 NTDOY 同样 URL 拼凑 (ir_base/{yyyy}/{yyyymmdd}{lang}.pdf)
+        #   - dict: {"url": "...", "size": "...", "note": "..."} 直接拿 url
+        #           用于 HESAY 这种 URL pattern 不规则 (VersionId + assets CDN) 的源.
         candidates = []
         sorted_verified = sorted(verified.items(), reverse=True)  # 倒序, 最新优先
-        for publish_date, info_str in sorted_verified:
-            yyyymmdd = publish_date.replace("-", "")[2:]  # 2024-05-07 -> 240507
+        for publish_date, info in sorted_verified:
             yyyy = publish_date[:4]
             if year is None or yyyy == str(year) or yyyy == str(year + 1):
-                candidates.append((f"{ir_base}/{yyyy}/{yyyymmdd}{pdf_lang}.pdf", info_str))
+                if isinstance(info, dict):
+                    url = info.get("url", "")
+                    note = info.get("note", "")
+                    if url:
+                        candidates.append((url, note))
+                else:
+                    yyyymmdd = publish_date.replace("-", "")[2:]  # 2024-05-07 -> 240507
+                    candidates.append((f"{ir_base}/{yyyy}/{yyyymmdd}{pdf_lang}.pdf", info))
 
         # 最后一手 fallback: 跟年度不匹配时, 试通用 YYMMDD (240507 Q4 / 241105 Q2 / 250204 Q3)
         if year and not candidates:
