@@ -17,6 +17,31 @@
     "RACE.US": "法拉利 — 意大利上市，SEC 20-F 无 10-Q"
   },
 
+  "_custom_ir_source_note": "use_sec_20f_only 的 ticker 若 SEC EDGAR 仍 Company not found, 走此真源 URL 公开 PDF. W37-#50c (NTDOY 8-2) 验证 240507e.pdf 977 KB 真财报.",
+  "custom_ir_source": {
+    "NTDOY.US": {
+      "name": "任天堂(ADR) 任天堂株式会社",
+      "ir_base_url": "https://www.nintendo.co.jp/ir/pdf",
+      "pdf_naming": "{YYMMDD}{lang}.pdf",
+      "lang": "e",
+      "fy_end_month": 3,
+      "publish_dates": {
+        "Q4": "05-07",
+        "Q1": "08-XX (无独立英文 PDF)",
+        "Q2": "11-05",
+        "Q3": "02-04"
+      },
+      "verified_pdfs": {
+        "2024-05-07": "240507e.pdf (FY24 Q4, 977 KB, 15 pages, 'Consolidated Results for the Years Ended March 31, 2023 and 2024')",
+        "2024-11-05": "241105e.pdf (FY25 Q2, 823 KB)",
+        "2024-11-06": "241106e.pdf (FY25 Q2 detailed, 19 MB)",
+        "2025-02-04": "250204e.pdf (FY25 Q3, 810 KB)",
+        "2025-02-05": "250205e.pdf (FY25 Q3 detailed, 210 KB)",
+        "2026-05-08": "260508e.pdf (FY26 Q4, 922 KB)"
+      }
+    }
+  },
+
   "dedup_skip_us": [
     "TCEHY.US",
     "BEKE.US",

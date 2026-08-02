@@ -436,18 +436,35 @@ class MStockAdapter(BaseStockAdapter):
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
     ) -> DownloadResult:
-        """下载指定类型SEC文档的通用方法"""
+        """下载指定类型SEC文档的通用方法
+
+        W37-#50c: 若 SEC EDGAR (_search_filings) 仍 Company not found
+        (NTDOY 任天堂跟 HESAY 爱马仕同样走 adr_map.use_sec_20f_only 但
+        edgartools/sec-api 都不认的 OTC ADR), 在 2 个出口 (NetworkError
+        raise + NO_FILINGS_FOUND 空返) 都试 adr_map.custom_ir_source
+        公开 PDF (W37-#50c NTDOY 240507e.pdf 977 KB 真任天堂 FY24 Q4
+        Consolidated Results). 跟 W36 PR #40 同样 1 file fix 模式
+        (不修 edgartools/sec-api, 加 fallback).
+        """
         ticker = code.upper()
+
+        # W37-#50c: helper 集中处理 SEC fail 后走 custom_ir_source
+        def _try_ir_fallback() -> "DownloadResult":
+            ir = self._try_custom_ir_source(ticker, year, form_type, checkpoint)
+            if ir is not None:
+                return ir
+            # 没 custom_ir_source mapping, 返原始 error
+            return DownloadResult(
+                success=False,
+                error_code="NO_FILINGS_FOUND",
+                error_message=f"未找到 {ticker} {year or ''} 的{form_type}文件",
+            )
 
         try:
             filings = self._search_filings(ticker, form_type, year, size=1)
 
             if not filings:
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_FOUND",
-                    error_message=f"未找到 {ticker} {year or ''} 的{form_type}文件",
-                )
+                return _try_ir_fallback()
 
             filing = filings[0]
             return self._download_filing(
@@ -455,12 +472,149 @@ class MStockAdapter(BaseStockAdapter):
             )
 
         except NetworkError as e:
+            # W37-#50c: SEC EDGAR 跟 sec-api 都不可用 (Company not found
+            # / network / API key), 试 custom_ir_source 公开 IR PDF
+            logger.info(
+                f"{ticker} {form_type} SEC 不可用 ({e.error_code}: {e}), "
+                f"尝试 custom_ir_source fallback (W37-#50c)"
+            )
+            ir = self._try_custom_ir_source(ticker, year, form_type, checkpoint)
+            if ir is not None:
+                return ir
             return DownloadResult(
                 success=False, error_code=e.error_code, error_message=str(e)
             )
         except Exception as e:
             return DownloadResult(
                 success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
+            )
+
+    def _try_custom_ir_source(
+        self,
+        ticker: str,
+        year: Optional[int],
+        form_type: str,
+        checkpoint: Optional[Dict[str, Any]],
+    ) -> Optional["DownloadResult"]:
+        """若 ticker 在 adr_map.custom_ir_source, 走 IR 公开 PDF.
+
+        W37-#50c: NTDOY 任天堂 240507e.pdf 977 KB 100% 验过真财报.
+        HESAY 不在此 (走 AMF BALO 计划, 属 #50b 范围, 不在 #50c 修).
+
+        Returns:
+            DownloadResult on success, None when no custom_ir_source
+            mapping exists (so the caller can fall through to the
+            original NO_FILINGS_FOUND return path).
+        """
+        try:
+            from unified_downloader.utils.adr_map import load_adr_map, get_custom_ir_source
+            adr_map = load_adr_map()
+            ir_info = get_custom_ir_source(ticker, adr_map)
+        except Exception as e:
+            logger.debug(f"adr_map custom_ir_source lookup failed for {ticker}: {e}")
+            return None
+
+        if not ir_info:
+            return None
+
+        ir_base = ir_info.get("ir_base_url", "").rstrip("/")
+        pdf_lang = ir_info.get("lang", "e")
+        verified = ir_info.get("verified_pdfs", {})
+        if not ir_base or not verified:
+            return None
+
+        # W37-#50c: 优先 verified_pdfs 匹配的 (YYMMDD -> URL), 跟
+        # 7-19 港股 source 同样“公开 PDF 直链 + 命名规则推断” 模式.
+        # 按 year 过滤: year=None 走最新一个; year=2024 只试 2024 公布日.
+        candidates = []
+        sorted_verified = sorted(verified.items(), reverse=True)  # 倒序, 最新优先
+        for publish_date, info_str in sorted_verified:
+            yyyymmdd = publish_date.replace("-", "")[2:]  # 2024-05-07 -> 240507
+            yyyy = publish_date[:4]
+            if year is None or yyyy == str(year) or yyyy == str(year + 1):
+                candidates.append((f"{ir_base}/{yyyy}/{yyyymmdd}{pdf_lang}.pdf", info_str))
+
+        # 最后一手 fallback: 跟年度不匹配时, 试通用 YYMMDD (240507 Q4 / 241105 Q2 / 250204 Q3)
+        if year and not candidates:
+            yy = year % 100
+            yy_next = (year + 1) % 100
+            yy_prev = (year - 1) % 100
+            for yyyy, yymmdd_list in [
+                (str(year), [f"{yy:02d}0507", f"{yy:02d}1105", f"{yy:02d}0204"]),
+                (str(year + 1), [f"{yy_next:02d}0507", f"{yy_next:02d}1105", f"{yy_next:02d}0204"]),
+            ]:
+                for yymmdd in yymmdd_list:
+                    candidates.append((f"{ir_base}/{yyyy}/{yymmdd}{pdf_lang}.pdf", "inferred"))
+
+        for url, info_str in candidates:
+            try:
+                logger.info(f"{ticker} trying custom_ir_source PDF: {url} ({info_str})")
+                result = self._download_pdf_direct(
+                    url=url, ticker=ticker, year=year, source_label="custom_ir_source"
+                )
+                if result.success:
+                    logger.info(f"{ticker} custom_ir_source hit: {url} ({result.file_size} bytes)")
+                    return result
+            except Exception as e:
+                logger.debug(f"{ticker} custom_ir_source URL {url} failed: {e}")
+                continue
+
+        logger.warning(f"{ticker} custom_ir_source exhausted {len(candidates)} candidates, none hit")
+        return None
+
+    def _download_pdf_direct(
+        self,
+        url: str,
+        ticker: str,
+        year: Optional[int],
+        source_label: str,
+    ) -> "DownloadResult":
+        """下载公开 IR PDF URL 到 downloads/ 目录, 返回 DownloadResult.
+
+        跟 _download_filing 同样 HTTP 路径, 但不依赖 edgartools/filing dict.
+        W37-#50c: 任天堂 240507e.pdf 977 KB 验过真财报.
+        """
+        from unified_downloader.models.entities import DownloadResult, DataSource
+        from datetime import date
+
+        try:
+            ext = ".pdf"
+            file_path = self._build_file_path(
+                ticker, year or date.today().year, source_label, ext
+            )
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # W37-#50c: 跟 m_stock 现有 download_file 同样用法 (line 810
+            # self._http_client.download_file(url, file_path, headers))
+            download_result = self._http_client.download_file(
+                url=url, file_path=str(file_path)
+            )
+            file_size = (
+                download_result.get("file_size", 0)
+                if isinstance(download_result, dict)
+                else 0
+            )
+
+            if file_size < 1000:
+                # <1KB 可能是 404 页面/redirect, 不算真抓
+                return DownloadResult(
+                    success=False,
+                    error_code="PDF_TOO_SMALL",
+                    error_message=f"{url} returned {file_size} bytes (< 1KB, likely 404 page)",
+                )
+
+            return DownloadResult(
+                success=True,
+                file_path=str(file_path),
+                file_size=file_size,
+                source="custom_ir_source",  # 跟 m_stock 现有 source="edgar" 同样用 string
+                metadata={"source": source_label, "url": url, "ticker": ticker, "year": year},
+            )
+        except Exception as e:
+            return DownloadResult(
+                success=False,
+                error_code="CUSTOM_IR_DOWNLOAD_ERROR",
+                error_message=f"{url} download failed: {e}",
             )
 
     def _download_10k(
