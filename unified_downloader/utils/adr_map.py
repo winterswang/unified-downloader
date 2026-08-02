@@ -127,3 +127,24 @@ def is_adr_skipped(code: str, adr_map: Dict[str, Any]) -> bool:
         if key in adr_map.get("dedup_skip_us", []):
             return True
     return False
+
+
+def get_custom_ir_source(code: str, adr_map: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the ``custom_ir_source`` entry for a US ticker, or None.
+
+    W37-#50c (8-2) — for tickers that SEC EDGAR cannot find
+    (e.g. NTDOY 任天堂 — Nintendo Co., Ltd. is only listed on TSE,
+    not on US exchanges as a foreign private issuer with full 20-F
+    coverage), the IR site publishes a public English PDF with a
+    predictable ``{YYMMDD}{lang}.pdf`` naming scheme. The m_stock
+    fallback path uses this entry to construct the real PDF URL.
+
+    Lookup keys: NTDOY / NTDOY.US / ntsoy all resolve to the same row,
+    matching the ``_us_key_variants`` convention used elsewhere in this
+    module. Returns None when the ticker has no custom IR mapping so
+    callers can fall through to existing SEC/sec-api logic.
+    """
+    key, info = _lookup_us_map(adr_map.get("custom_ir_source", {}), code)
+    if info:
+        return info
+    return None
