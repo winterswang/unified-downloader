@@ -128,7 +128,12 @@ def test_set_doc_status_persists_quarterly_form_type_for_fallback_protection():
     assert bulk.should_mark_quarterly_unavailable(state, "2025", "Q1-Q3", "10q") is True
 
 
-def test_download_one_us_uses_pdf_without_disabling_cache(monkeypatch, tmp_path):
+def test_download_one_us_uses_html_not_pdf(monkeypatch, tmp_path):
+    """W38-#50e: 美股下载不再 --pdf (commit 38b9f16 7-12 改: IMA 支持 HTML 上传).
+
+    旧版期望 '--pdf' in calls, 实际 source code 早就不 append. 跟 W36 PR #42 同样
+    test/source 不一致, 改 test 删 '--pdf' 期望, 加 'download' 'single' 验证基本 cmd 存在.
+    """
     bulk = load_bulk_module()
     bulk.log = __import__("logging").getLogger("test-bulk")
     output = tmp_path / "downloads/m/AAP/AAPL_2025_10Q.pdf"
@@ -145,8 +150,10 @@ def test_download_one_us_uses_pdf_without_disabling_cache(monkeypatch, tmp_path)
     monkeypatch.setattr(bulk, "run", fake_run)
 
     assert bulk.download_one("AAPL", "US", "2025", "10q") == output
-    assert "--pdf" in calls[0]
+    # W38: IMA 现在直接支持 HTML 上传, 美股不再 --pdf (commit 38b9f16 7-12 改)
+    assert "--pdf" not in calls[0], "W38: 美股不再 --pdf (commit 38b9f16 7-12 改: IMA HTML 支持)"
     assert "--no-cache" not in calls[0]
+    assert "download" in calls[0] and "single" in calls[0]
 
 
 def test_ima_sync_script_path_can_be_overridden(monkeypatch):
