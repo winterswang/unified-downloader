@@ -1,13 +1,27 @@
 {
   "_description": "ADR映射表：美股ADR → 港股源或其他数据源。用于决定下载策略。",
-  
   "use_hk_source": {
-    "TCEHY.US": {"hk_code": "0700", "name": "腾讯控股", "note": "ADR, HK primary 700.HK"},
-    "BEKE.US":  {"hk_code": "2423", "name": "贝壳-W", "note": "ADR, HK listed 2423.HK"},
-    "HTHT.US":  {"hk_code": "1179", "name": "华住集团-S", "note": "ADR, HK listed 1179.HK"},
-    "MNSO.US":  {"hk_code": "9896", "name": "名创优品", "note": "ADR, HK listed 9896.HK"}
+    "TCEHY.US": {
+      "hk_code": "0700",
+      "name": "腾讯控股",
+      "note": "ADR, HK primary 700.HK"
+    },
+    "BEKE.US": {
+      "hk_code": "2423",
+      "name": "贝壳-W",
+      "note": "ADR, HK listed 2423.HK"
+    },
+    "HTHT.US": {
+      "hk_code": "1179",
+      "name": "华住集团-S",
+      "note": "ADR, HK listed 1179.HK"
+    },
+    "MNSO.US": {
+      "hk_code": "9896",
+      "name": "名创优品",
+      "note": "ADR, HK listed 9896.HK"
+    }
   },
-
   "use_sec_20f_only": {
     "HESAY.US": "爱马仕(ADR) — 仅巴黎上市，SEC 20-F 无 10-Q",
     "NTDOY.US": "任天堂(ADR) — 仅东京上市，SEC 20-F 无 10-Q",
@@ -16,7 +30,6 @@
     "TSM.US": "台积电 — 台湾上市，SEC 20-F 无 10-Q",
     "RACE.US": "法拉利 — 意大利上市，SEC 20-F 无 10-Q"
   },
-
   "_custom_ir_source_note": "use_sec_20f_only 的 ticker 若 SEC EDGAR 仍 Company not found, 走此真源 URL 公开 PDF. W37-#50c (NTDOY 8-2) 验证 240507e.pdf 977 KB 真财报.",
   "custom_ir_source": {
     "NTDOY.US": {
@@ -61,14 +74,89 @@
           "note": "URD 2025 EN"
         }
       }
+    },
+    "LVMUY.US": {
+      "name": "LVMH 酩悦·轩尼诗-路易·威登集团 (ADR)",
+      "ir_base_url": "https://lvmh-com.cdn.prismic.io/lvmh-com",
+      "prismic_cms": true,
+      "lang": "en",
+      "fy_end_month": 12,
+      "publish_dates": {
+        "URD": "01-XX (URD 含 FY 上年 + FY 上上年, 3 月 EN/FR 双版本发布)"
+      },
+      "verified_pdfs": {
+        "2025-01-01": {
+          "url": "https://lvmh-com.cdn.prismic.io/lvmh-com/aczo-pGXnQHGZKQ5_UniversalRegistrationDocument2025.pdf",
+          "size": "9.1 MB",
+          "note": "URD 2024 EN (Universal Registration Document 2024, 8-2 14:43 真抓验证, 200 OK)"
+        },
+        "2025-01-02": {
+          "url": "https://lvmh-com.cdn.prismic.io/lvmh-com/ac0pyZGXnQHGZK4S_LVMH_RA2025_GB_MEL1.pdf",
+          "size": "31 MB",
+          "note": "LVMH Annual Report 2024 EN (FY 2024, 8-2 真抓验证)"
+        }
+      }
+    },
+    "LVMHF.US": {
+      "name": "LVMH 酩悦·轩尼诗-路易·威登集团 (ADR, alt ticker)",
+      "ir_base_url": "https://lvmh-com.cdn.prismic.io/lvmh-com",
+      "prismic_cms": true,
+      "lang": "en",
+      "fy_end_month": 12,
+      "publish_dates": {
+        "URD": "01-XX"
+      },
+      "verified_pdfs": {
+        "2025-01-01": {
+          "url": "https://lvmh-com.cdn.prismic.io/lvmh-com/aczo-pGXnQHGZKQ5_UniversalRegistrationDocument2025.pdf",
+          "size": "9.1 MB",
+          "note": "LVMH URD 2024 EN (跟 LVMUY.US 同源, 因为 SEC EDGAR 2 ticker 都 Company not found)"
+        }
+      }
+    },
+    "LRLCY.US": {
+      "name": "L'Oréal 欧莱雅集团 (ADR)",
+      "ir_base_url": "https://www.loreal-finance.com",
+      "drupal_cms": true,
+      "file_path_pattern": "system/files/{YYYY-MM}/{filename}.pdf",
+      "lang": "en",
+      "fy_end_month": 12,
+      "publish_dates": {
+        "URD": "03-XX (RFA = Rapport Financier Annuel, 跟 HESAY URD 同样)",
+        "RFS": "07-XX (RFS = Rapport Financier Semestriel, H1 半年度)"
+      },
+      "verified_pdfs": {
+        "2026-07-29": {
+          "url": "https://www.loreal-finance.com/system/files/2026-07/CP_1H26_EN%2029.07.pdf",
+          "size": "?",
+          "note": "L'Oréal H1 2026 Press Release EN (跟 RFS 同期发布, 8-2 验证 200 OK)"
+        }
+      }
+    },
+    "LRLCF.US": {
+      "name": "L'Oréal 欧莱雅集团 (ADR, alt ticker)",
+      "ir_base_url": "https://www.loreal-finance.com",
+      "drupal_cms": true,
+      "file_path_pattern": "system/files/{YYYY-MM}/{filename}.pdf",
+      "lang": "en",
+      "fy_end_month": 12,
+      "publish_dates": {
+        "URD": "03-XX",
+        "RFS": "07-XX"
+      },
+      "verified_pdfs": {
+        "2026-07-29": {
+          "url": "https://www.loreal-finance.com/system/files/2026-07/LOREAL_RFS_2026_UK.pdf",
+          "size": "6.0 MB",
+          "note": "L'Oréal RFS 2026 (跟 LRLCY.US 同源)"
+        }
+      }
     }
   },
-
   "dedup_skip_us": [
     "TCEHY.US",
     "BEKE.US",
     "HTHT.US"
   ],
-
   "_dedup_note": "以上三个 ADR 的港股源已在自选股中，处理港股时一并下载，跳过美股条目避免重复。"
 }
