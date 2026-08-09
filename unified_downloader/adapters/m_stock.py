@@ -461,12 +461,22 @@ class MStockAdapter(BaseStockAdapter):
             )
 
         try:
-            filings = self._search_filings(ticker, form_type, year, size=1)
+            # W39 8-9 RACE 修复: 6-K 是"封面+exhibit"结构, 同一公司一年有几十条 6-K
+            # (普通 PR / 董事会变动 / 财报). 若只取 size=1 (最新一条), 可能取到普通 PR
+            # (如 RACE 7-31 fnvbb310726prex.htm 3KB), 而非 Q2 财报 (7-30 interim report
+            # 209KB 含 revenue/EBITDA). 所以对 6-K 多取几条, 选 exhibit 含财报关键词的.
+            size = 10 if form_type == "6-K" else 1
+            filings = self._search_filings(ticker, form_type, year, size=size)
 
             if not filings:
                 return _try_ir_fallback()
 
             filing = filings[0]
+            if form_type == "6-K" and len(filings) > 1:
+                picked = self._pick_earnings_6k(filings)
+                if picked is not None:
+                    filing = picked
+
             return self._download_filing(
                 filing, ticker, form_type, year, on_progress, checkpoint
             )
@@ -488,6 +498,51 @@ class MStockAdapter(BaseStockAdapter):
             return DownloadResult(
                 success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
             )
+
+    _EARNINGS_KEYWORDS = (
+        "revenue", "net income", "gross profit", "earnings per share",
+        "diluted", "EBITDA", "operating income", "financial results",
+        "second quarter", "third quarter", "fourth quarter", "first quarter",
+    )
+    # 文件名特征词: 财报型 exhibit 文件名常含这些 (RACE: fnvq22026results /
+    # ferrarinvinterimreport-063; 普通 PR 是 fnvbb...prex)
+    _FILE_EARNINGS_KEYWORDS = (
+        "results", "interim", "quarter", "annual", "report", "earnings",
+        "financial", "fy", "semiannual", "half-year", "halfyear", "semi",
+    )
+
+    def _pick_earnings_6k(
+        self, filings: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """从多条 6-K 中选财报特征最强的.
+
+        W39 8-9 RACE 修复: 6-K 是"封面+exhibit"结构, 同一年几十条 6-K
+        (普通 PR / 董事会变动 / 财报). 仅凭日期无法区分. 每条 6-K 的 exhibit
+        (EX-99) 才是真内容. 选 exhibit 文件名+描述含财报关键词最多的那条;
+        若没有, 选 exhibit 最多的那条; 仍没有回退 None (调用方用第一条).
+        """
+        best = None
+        best_score = -1
+        for filing in filings:
+            exhibits = filing.get("_exhibits", [])
+            if not exhibits:
+                continue
+            score = 0
+            # 对每个 exhibit, 从描述+文件名里计财报关键词
+            for ex in exhibits:
+                desc = str(ex.get("description", "")) or ""
+                doc = str(ex.get("document", "")) or ""
+                blob = (desc + " " + doc).lower()
+                score += sum(1 for kw in self._EARNINGS_KEYWORDS if kw in blob)
+                score += sum(1 for kw in self._FILE_EARNINGS_KEYWORDS if kw in blob)
+                # exhibit 大小权重 (财报正文通常更大)
+                ex_size = ex.get("size_bytes", 0) or 0
+                if ex_size:
+                    score += 1 if ex_size > 100_000 else 0
+            if score > best_score:
+                best_score = score
+                best = filing
+        return best if best_score > 0 else None
 
     def _try_custom_ir_source(
         self,
@@ -1070,10 +1125,16 @@ class MStockAdapter(BaseStockAdapter):
                     exhibits = filing.get("_exhibits", [])
                     if exhibits:
                         try:
-                            downloaded_path = self._merge_6k_exhibits(
+                            merged = self._merge_6k_exhibits(
                                 downloaded_path, exhibits, ticker, file_year,
                                 form_type, headers
                             )
+                            # W39 8-9 RACE 修复: merge 返回的才是含财报正文的文件,
+                            # 必须同步 result["file_path"] (否则 return 仍指向封面 15KB)
+                            if merged and merged != downloaded_path:
+                                downloaded_path = merged
+                                result["file_path"] = str(merged)
+                                result["file_size"] = merged.stat().st_size
                         except Exception as e:
                             logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
 
