@@ -251,6 +251,12 @@ class MStockAdapter(BaseStockAdapter):
                     if hasattr(filing, "filing_url")
                     else None,
                     "source": "edgar",
+                    # 单文档 6-K (NVO 等): 正文就是 primary doc, 无独立 EX-99 exhibit.
+                    # 记录 size 供回退时选“最大文件”（财报正文通常远大于普通公告）.
+                    # 2026-08-13 NVO 修复: filing.size 在 edgar 4.x/5.x 均可拿.
+                    "size": getattr(filing, "size", None)
+                    or (len(filing.text or "") if hasattr(filing, "text") else None)
+                    or 0,
                 }
 
                 # 6-K is just a cover page; extract exhibit URLs for the real content
@@ -476,6 +482,24 @@ class MStockAdapter(BaseStockAdapter):
                 picked = self._pick_earnings_6k(filings)
                 if picked is not None:
                     filing = picked
+                else:
+                    # 2026-08-13 NVO 修复: _pick_earnings_6k 对“单文档 6-K”
+                    # (NVO 等, 正文=primary doc, 无独立 EX-99 exhibit) 无 exhibit
+                    # 可打分 → 返回 None → 旧逻辑回退 filings[0] (最新一条),
+                    # 会抓到普通公告 (NVO 8-10 股票回购 24KB) 而非 8-4 完整财报
+                    # (caq22026.htm 1.73MB). 改为选 size 最大的 filing (财报正文
+                    # 通常远大于普通公告/回购公告), 避免 SUSPICIOUS_TOO_SMALL.
+                    best = max(
+                        filings, key=lambda f: int(f.get("size") or 0)
+                    )
+                    if int(best.get("size") or 0) > int(filing.get("size") or 0):
+                        logger.info(
+                            f"[m_stock] 6-K 无财报 exhibit, 选 size 最大 filing: "
+                            f"{best.get('accessionNo')} size={best.get('size')} "
+                            f"(替代 filings[0] {filing.get('accessionNo')} "
+                            f"size={filing.get('size')})"
+                        )
+                        filing = best
 
             return self._download_filing(
                 filing, ticker, form_type, year, on_progress, checkpoint
