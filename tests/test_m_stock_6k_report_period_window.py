@@ -127,3 +127,42 @@ class TestSixKReportPeriodWindow:
         assert picked["accessionNo"] == "0001104659-26-095490"
         # 窗口外 (3-12, size 更大) 不能赢过窗口内
         assert picked["size"] == 206088
+
+    def test_download_form_size_fallback_selects_largest(self, adapter):
+        """_download_form: _pick_earnings_6k 返回 None 时选 size 最大 filing.
+
+        PR #48 review 建议: 覆盖真实 size 回退路径 (_download_form L490-505),
+        而非只测 Python max() builtin.
+        """
+        from unittest.mock import patch
+
+        # 通用 exhibit → _pick_earnings_6k 全 0 分 → None → 触发 size 回退
+        filings = [
+            _mk_filing("ACC-SMALL", 50000, "2026-08-13",
+                       exhibits=[{"url": "https://x/ex99.htm",
+                                  "description": "EXHIBIT 99.1",
+                                  "document": "tm1_ex99-1.htm"}]),
+            _mk_filing("ACC-BIG", 300000, "2026-07-30",
+                       exhibits=[{"url": "https://x/ex99.htm",
+                                  "description": "EXHIBIT 99.1",
+                                  "document": "tm2_ex99-1.htm"}]),
+            _mk_filing("ACC-MID", 100000, "2026-08-01",
+                       exhibits=[{"url": "https://x/ex99.htm",
+                                  "description": "EXHIBIT 99.1",
+                                  "document": "tm3_ex99-1.htm"}]),
+        ]
+        captured = {}
+
+        def fake_download_filing(filing, ticker, form_type, year, on_progress, checkpoint):
+            captured["filing"] = filing
+            from unified_downloader.models.entities import DownloadResult
+            return DownloadResult(success=True, file_path="/tmp/x.html",
+                                  file_size=0)
+
+        with patch.object(adapter, "_search_filings", return_value=filings), \
+             patch.object(adapter, "_download_filing", side_effect=fake_download_filing):
+            result = adapter._download_form("XNET", "6-K", 2026, None, None)
+
+        assert result.success
+        assert captured["filing"]["accessionNo"] == "ACC-BIG"
+        assert captured["filing"]["size"] == 300000

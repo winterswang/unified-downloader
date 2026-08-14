@@ -1,6 +1,7 @@
 """美股适配器 - 使用 edgartools (主) + sec-api (兜底)"""
 
 import asyncio
+import calendar
 import datetime
 import logging
 import os
@@ -582,7 +583,10 @@ class MStockAdapter(BaseStockAdapter):
                     q = m.group(2)
                     if q:
                         month_end = {"1": 3, "2": 6, "3": 9, "4": 12}[q]
-                        target_end = datetime.date(y, month_end, 30)
+                        # off-by-1 修复 (PR #48 review 8-14): 3月=31天, 12月=31天,
+                        # 不能硬编码 day=30 (Q1 会得 Mar30 而非 Mar31, Q4 得 Dec30 而非 Dec31)
+                        last_day = calendar.monthrange(y, month_end)[1]
+                        target_end = datetime.date(y, month_end, last_day)
                     else:
                         # FY 无明确季度 → 用 12-31 (年度报告)
                         target_end = datetime.date(y, 12, 31)
