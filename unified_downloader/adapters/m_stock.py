@@ -1,8 +1,11 @@
 """美股适配器 - 使用 edgartools (主) + sec-api (兜底)"""
 
 import asyncio
+import calendar
+import datetime
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
@@ -142,7 +145,10 @@ class MStockAdapter(BaseStockAdapter):
                 code, document_type, datasource, checkpoint, on_progress
             )
         elif doc_type_lower in ["6k", "8k"]:
-            return self._download_6k(code, year, datasource, checkpoint, on_progress)
+            return self._download_6k(
+                code, year, datasource, checkpoint, on_progress,
+                report_period=kwargs.get("report_period"),
+            )
         elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
             return self._download_form(code, "20-F", year, checkpoint, on_progress)
         else:
@@ -251,6 +257,12 @@ class MStockAdapter(BaseStockAdapter):
                     if hasattr(filing, "filing_url")
                     else None,
                     "source": "edgar",
+                    # 单文档 6-K (NVO 等): 正文就是 primary doc, 无独立 EX-99 exhibit.
+                    # 记录 size 供回退时选“最大文件”（财报正文通常远大于普通公告）.
+                    # 2026-08-13 NVO 修复: filing.size 在 edgar 4.x/5.x 均可拿.
+                    "size": getattr(filing, "size", None)
+                    or (len(filing.text or "") if hasattr(filing, "text") else None)
+                    or 0,
                 }
 
                 # 6-K is just a cover page; extract exhibit URLs for the real content
@@ -435,6 +447,7 @@ class MStockAdapter(BaseStockAdapter):
         year: Optional[int],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
+        report_period: Optional[str] = None,
     ) -> DownloadResult:
         """下载指定类型SEC文档的通用方法
 
@@ -461,12 +474,40 @@ class MStockAdapter(BaseStockAdapter):
             )
 
         try:
-            filings = self._search_filings(ticker, form_type, year, size=1)
+            # W39 8-9 RACE 修复: 6-K 是"封面+exhibit"结构, 同一公司一年有几十条 6-K
+            # (普通 PR / 董事会变动 / 财报). 若只取 size=1 (最新一条), 可能取到普通 PR
+            # (如 RACE 7-31 fnvbb310726prex.htm 3KB), 而非 Q2 财报 (7-30 interim report
+            # 209KB 含 revenue/EBITDA). 所以对 6-K 多取几条, 选 exhibit 含财报关键词的.
+            size = 10 if form_type == "6-K" else 1
+            filings = self._search_filings(ticker, form_type, year, size=size)
 
             if not filings:
                 return _try_ir_fallback()
 
             filing = filings[0]
+            if form_type == "6-K" and len(filings) > 1:
+                picked = self._pick_earnings_6k(filings, report_period=report_period)
+                if picked is not None:
+                    filing = picked
+                else:
+                    # 2026-08-13 NVO 修复: _pick_earnings_6k 对“单文档 6-K”
+                    # (NVO 等, 正文=primary doc, 无独立 EX-99 exhibit) 无 exhibit
+                    # 可打分 → 返回 None → 旧逻辑回退 filings[0] (最新一条),
+                    # 会抓到普通公告 (NVO 8-10 股票回购 24KB) 而非 8-4 完整财报
+                    # (caq22026.htm 1.73MB). 改为选 size 最大的 filing (财报正文
+                    # 通常远大于普通公告/回购公告), 避免 SUSPICIOUS_TOO_SMALL.
+                    best = max(
+                        filings, key=lambda f: int(f.get("size") or 0)
+                    )
+                    if int(best.get("size") or 0) > int(filing.get("size") or 0):
+                        logger.info(
+                            f"[m_stock] 6-K 无财报 exhibit, 选 size 最大 filing: "
+                            f"{best.get('accessionNo')} size={best.get('size')} "
+                            f"(替代 filings[0] {filing.get('accessionNo')} "
+                            f"size={filing.get('size')})"
+                        )
+                        filing = best
+
             return self._download_filing(
                 filing, ticker, form_type, year, on_progress, checkpoint
             )
@@ -488,6 +529,142 @@ class MStockAdapter(BaseStockAdapter):
             return DownloadResult(
                 success=False, error_code="DOWNLOAD_ERROR", error_message=str(e)
             )
+
+    _EARNINGS_KEYWORDS = (
+        "revenue", "net income", "gross profit", "earnings per share",
+        "diluted", "EBITDA", "operating income", "financial results",
+        "second quarter", "third quarter", "fourth quarter", "first quarter",
+    )
+    # 文件名特征词: 财报型 exhibit 文件名常含这些 (RACE: fnvq22026results /
+    # ferrarinvinterimreport-063; 普通 PR 是 fnvbb...prex)
+    _FILE_EARNINGS_KEYWORDS = (
+        "results", "interim", "quarter", "annual", "report", "earnings",
+        "financial", "fy", "semiannual", "half-year", "halfyear", "semi",
+    )
+
+    def _pick_earnings_6k(
+        self,
+        filings: List[Dict[str, Any]],
+        report_period: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """从多条 6-K 中选财报特征最强的.
+
+        W39 8-9 RACE 修复: 6-K 是"封面+exhibit"结构, 同一年几十条 6-K
+        (普通 PR / 董事会变动 / 财报). 仅凭日期无法区分. 每条 6-K 的 exhibit
+        (EX-99) 才是真内容. 选 exhibit 文件名+描述含财报关键词最多的那条;
+        若没有, 选 exhibit 最多的那条; 仍没有回退 None (调用方用第一条).
+
+        XNET 8-14 修复: 部分公司 (如迅雷 XNET) 的 6-K exhibit 描述全是通用
+        "EXHIBIT 99.1", document 全是 tmXXX_ex99-1.htm, 不含任何财报关键词
+        → 所有 filing 打分都是 0 → 回退按 size 选最大, 但 size 最大不一定是
+        目标季度 (XNET Q2 8-13 发布 size=206088, Q4+FY2025 3-12 发布
+        size=244676 更大 → 误选 Q4).
+
+        修复策略 (两层):
+        1. 若传了 report_period (如 "2026Q2") 且能解析出目标季度 → 用
+           filedAt 日期窗口优先匹配: 目标季度结束日 + [EARLY_DAYS, LATE_DAYS]
+           天窗口内的 filing 优先. 窗口内选 exhibit 打分最高的; 若窗口内
+           全无 exhibit 可打分, 选窗口内 size 最大的. 这保证 XNET 选到
+           8-13 的 Q2 (窗口 ~7-30~9-18) 而不是 3-12 的 Q4.
+        2. 无 report_period 或窗口无命中 → 回退旧逻辑 (打分 → None).
+        """
+        # 目标季度窗口 (季度结束后第 N~M 天发布财报)
+        QUARTER_EARLY_DAYS = 25   # 财报最早可能在季度结束后 ~25 天发布
+        QUARTER_LATE_DAYS = 85    # 最晚在 ~85 天内 (跨季末但未到下一季末)
+
+        # 解析 report_period → 目标季度结束日
+        target_end: Optional[datetime.date] = None
+        if report_period:
+            try:
+                period = report_period.upper()  # e.g. 2026Q2 / 2026FY / 2026H1
+                m = re.match(r"(\d{4})(?:[QH]([1-4]))?", period)
+                if m:
+                    y = int(m.group(1))
+                    q = m.group(2)
+                    if q:
+                        month_end = {"1": 3, "2": 6, "3": 9, "4": 12}[q]
+                        # off-by-1 修复 (PR #48 review 8-14): 3月=31天, 12月=31天,
+                        # 不能硬编码 day=30 (Q1 会得 Mar30 而非 Mar31, Q4 得 Dec30 而非 Dec31)
+                        last_day = calendar.monthrange(y, month_end)[1]
+                        target_end = datetime.date(y, month_end, last_day)
+                    else:
+                        # FY 无明确季度 → 用 12-31 (年度报告)
+                        target_end = datetime.date(y, 12, 31)
+            except Exception:
+                target_end = None
+
+        def _filed_at_date(f: Dict[str, Any]) -> Optional[datetime.date]:
+            raw = f.get("filedAt") or f.get("filing_date") or ""
+            if isinstance(raw, datetime.date):
+                return raw
+            try:
+                return datetime.date.fromisoformat(str(raw)[:10])
+            except (ValueError, TypeError):
+                return None
+
+        def _exhibit_score(f: Dict[str, Any]) -> int:
+            """计算 filing 的 exhibit 财报特征分 (旧逻辑)."""
+            score = 0
+            for ex in f.get("_exhibits", []):
+                desc = str(ex.get("description", "")) or ""
+                doc = str(ex.get("document", "")) or ""
+                blob = (desc + " " + doc).lower()
+                score += sum(1 for kw in self._EARNINGS_KEYWORDS if kw in blob)
+                score += sum(1 for kw in self._FILE_EARNINGS_KEYWORDS if kw in blob)
+                ex_size = ex.get("size_bytes", 0) or 0
+                if ex_size:
+                    score += 1 if ex_size > 100_000 else 0
+            return score
+
+        # ── 策略 1: 目标季度日期窗口优先 ──
+        if target_end is not None:
+            window_lo = target_end + datetime.timedelta(days=QUARTER_EARLY_DAYS)
+            window_hi = target_end + datetime.timedelta(days=QUARTER_LATE_DAYS)
+            in_window = []
+            for f in filings:
+                d = _filed_at_date(f)
+                if d is None:
+                    continue
+                if window_lo <= d <= window_hi:
+                    in_window.append(f)
+            if in_window:
+                logger.info(
+                    f"[m_stock] 6-K 目标季度窗口 {window_lo}~{window_hi} "
+                    f"命中 {len(in_window)}/{len(filings)} 条: "
+                    + ", ".join(f.get('accessionNo','?') for f in in_window)
+                )
+                # 窗口内优先选 exhibit 打分最高; 全 0 分则选 size 最大
+                best_in = None
+                best_score_in = -1
+                for f in in_window:
+                    s = _exhibit_score(f)
+                    if s > best_score_in:
+                        best_score_in = s
+                        best_in = f
+                if best_score_in > 0:
+                    return best_in
+                # 全无 exhibit 可打分 → 选窗口内 size 最大
+                best_in = max(
+                    in_window, key=lambda f: int(f.get("size") or 0)
+                )
+                logger.info(
+                    f"[m_stock] 6-K 窗口内无 exhibit 财报分, 选 size 最大: "
+                    f"{best_in.get('accessionNo')} size={best_in.get('size')}"
+                )
+                return best_in
+
+        # ── 策略 2: 旧逻辑 (exhibit 打分, 无窗口) ──
+        best = None
+        best_score = -1
+        for filing in filings:
+            exhibits = filing.get("_exhibits", [])
+            if not exhibits:
+                continue
+            score = _exhibit_score(filing)
+            if score > best_score:
+                best_score = score
+                best = filing
+        return best if best_score > 0 else None
 
     def _try_custom_ir_source(
         self,
@@ -783,9 +960,18 @@ class MStockAdapter(BaseStockAdapter):
         datasource: Optional[DataSource],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
+        report_period: Optional[str] = None,
     ) -> DownloadResult:
-        """下载6-K报告（含展品合并）"""
-        return self._download_form(code, "6-K", year, checkpoint, on_progress)
+        """下载6-K报告（含展品合并）
+
+        report_period: 目标报告期, 如 "2026Q2". 传参时 _download_form 会用
+        目标季度日期窗口优先选对应财报 6-K (XNET 修复, 8-14), 避免 exhibit
+        描述都是通用 "EXHIBIT 99.1" 时按 size 选到其他季度.
+        """
+        return self._download_form(
+            code, "6-K", year, checkpoint, on_progress,
+            report_period=report_period,
+        )
 
     def _merge_6k_exhibits(
         self,
@@ -1070,10 +1256,16 @@ class MStockAdapter(BaseStockAdapter):
                     exhibits = filing.get("_exhibits", [])
                     if exhibits:
                         try:
-                            downloaded_path = self._merge_6k_exhibits(
+                            merged = self._merge_6k_exhibits(
                                 downloaded_path, exhibits, ticker, file_year,
                                 form_type, headers
                             )
+                            # W39 8-9 RACE 修复: merge 返回的才是含财报正文的文件,
+                            # 必须同步 result["file_path"] (否则 return 仍指向封面 15KB)
+                            if merged and merged != downloaded_path:
+                                downloaded_path = merged
+                                result["file_path"] = str(merged)
+                                result["file_size"] = merged.stat().st_size
                         except Exception as e:
                             logger.warning(f"6-K exhibit merge failed, using cover only: {e}")
 

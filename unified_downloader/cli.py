@@ -238,8 +238,9 @@ def download_group():
 @click.option("--pdf", is_flag=True, help="将HTML文件自动转换为PDF")
 @click.option("--translate", is_flag=True, help="翻译为中文 (仅美股)")
 @click.option("--verbose", "-v", is_flag=True, help="详细输出")
+@click.option("--report-period", "report_period", default=None, help="目标报告期, 如 2026Q2 / 2026FY (用于6-K按季度窗口选正确财报)")
 @ctx
-def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, translate, verbose):
+def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, translate, verbose, report_period):
     """下载单个文档"""
     downloader = cli_ctx.downloader
 
@@ -267,6 +268,7 @@ def download_single(cli_ctx, code, year, type, market, output, no_cache, pdf, tr
         use_cache=not no_cache,
         convert_to_pdf=pdf if pdf else None,
         translate=translate if translate else None,
+        report_period=report_period,
     )
 
     echo_result(result, verbose=verbose)
