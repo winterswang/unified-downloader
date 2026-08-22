@@ -28,6 +28,50 @@ STATUS_ICONS = {
 
 DEDUP_US = {"TCEHY.US", "BEKE.US", "HTHT.US"}
 PROCESSING_STALE_SECONDS = 2 * 3600
+# W40-#50 P1: failed 不再是终态 — 与 bulk_download "Failed attempts must
+# remain retryable in later cron runs" 的设计对齐。限制: 每只股票最多
+# MAX_FAILED_ATTEMPTS 次, 且两次尝试间隔 >= FAILED_RETRY_BACKOFF_SECONDS,
+# 避免坏股票每小时空转占掉整个 cron 窗口。
+MAX_FAILED_ATTEMPTS = 5
+FAILED_RETRY_BACKOFF_SECONDS = 4 * 3600
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """tmp+rename 原子写。W40-#50 P1: 之前直接 write_text, 调度器超时 kill
+    子进程可能落在写一半 → 截断 JSON → 下次 cron json.loads 崩溃且每次
+    在同一点崩, 队列永久卡死需人工删文件。"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_json_safe(path: Path):
+    """读 JSON; 损坏 (截断/非法) 时移 aside 保留排查并返回 None。
+    单个坏状态文件不应炸掉整个调度循环。"""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        corrupt = path.with_suffix(
+            path.suffix + f".corrupt-{datetime.now(TZ_CN).strftime('%Y%m%d%H%M%S')}"
+        )
+        try:
+            path.replace(corrupt)
+            print(f"WARN: corrupted JSON moved aside: {path} -> {corrupt} ({e})")
+        except OSError:
+            print(f"WARN: corrupted JSON unreadable and could not be moved: {path} ({e})")
+        return None
+
+
+def _is_retryable_failed(stock: dict, now: datetime) -> bool:
+    """failed 股票是否可重试: 未超尝试上限 且 距上次失败已过退避窗口。"""
+    if stock.get("status") != "failed":
+        return False
+    if stock.get("attempts", 1) >= MAX_FAILED_ATTEMPTS:
+        return False
+    failed_at = _parse_iso_datetime(stock.get("failed_at"))
+    if failed_at and (now - failed_at).total_seconds() < FAILED_RETRY_BACKOFF_SECONDS:
+        return False
+    return True
 
 
 def _normalize_watchlist_rows(rows: list) -> list[tuple[str, str, str]]:
@@ -109,7 +153,7 @@ def build_queue(rows: list[tuple[str, str, str]]) -> list[dict]:
 
 def write_queue(queue: list[dict]) -> None:
     QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    QUEUE_FILE.write_text(json.dumps({
+    _atomic_write_text(QUEUE_FILE, json.dumps({
         "created_at": datetime.now(TZ_CN).isoformat(),
         "total": len(queue), "pending": len(queue), "done": 0, "failed": 0,
         "stocks": queue,
@@ -282,7 +326,7 @@ def recover_stale_processing(q: dict, max_age_seconds: int = PROCESSING_STALE_SE
         sf = _find_state(code)
         if _processing_age_seconds(stock, sf) < max_age_seconds:
             continue
-        st = json.loads(sf.read_text()) if sf and sf.exists() else None
+        st = _read_json_safe(sf) if sf and sf.exists() else None
         sm = get_state_summary(st) if st else {}
         failures = sm.get("annual_failed", 0) + sm.get("quarterly_failed", 0) + sm.get("ima_failed", 0)
         ok = sm.get("annual_ok", 0) + sm.get("quarterly_ok", 0)
@@ -309,14 +353,23 @@ def recover_stale_processing(q: dict, max_age_seconds: int = PROCESSING_STALE_SE
 
 
 def has_unfinished_queue_items(q: dict) -> bool:
-    return any(s.get("status") in {"pending", "processing"} for s in q.get("stocks", []))
+    now = datetime.now(TZ_CN)
+    for s in q.get("stocks", []):
+        if s.get("status") in {"pending", "processing"}:
+            return True
+        if _is_retryable_failed(s, now):
+            return True
+    return False
 
 def show_status():
     if not QUEUE_FILE.exists():
         print("No queue. Run --init first.")
         return
 
-    q = json.loads(QUEUE_FILE.read_text())
+    q = _read_json_safe(QUEUE_FILE)
+    if q is None:
+        print("ERROR: queue file corrupted (moved aside). Run --init to rebuild.")
+        return
     print(f"\n{'='*70}")
     print(f"  批量下载状态 — {q['total']} stocks  "
           f"✅{q['done']}  ❌{q['failed']}  ⬜{q['pending']}")
@@ -329,8 +382,12 @@ def show_status():
         # 读取细粒度状态
         sf = _find_state(code)
         detail = ""
-        if sf:
-            st = json.loads(sf.read_text())
+        if sf and sf.exists():
+            st = _read_json_safe(sf)
+            if st is None:
+                detail = " (状态文件损坏已移出)"
+                print(f"  {marker} {code:15s} {s['name']:12s} {s['market']}  {detail}")
+                continue
             sm = get_state_summary(st)
             detail = f" A:{sm.get('annual_ok',0)}/{sm.get('annual_ok',0)+sm.get('annual_skipped',0)} "
             detail += f"Q:{sm.get('quarterly_ok',0)}/{sm.get('quarterly_ok',0)+sm.get('quarterly_skipped',0)} "
@@ -359,7 +416,10 @@ def show_detail(code: str = None):
     if not sf.exists():
         print(f"No state file for {code}")
         return
-    st = json.loads(sf.read_text())
+    st = _read_json_safe(sf)
+    if st is None:
+        print(f"State file for {code} was corrupted and has been moved aside.")
+        return
     print(f"\n{'='*70}")
     print(f"  {code}  {st.get('name','?')}  market={st.get('market','?')}")
     print(f"  status={st.get('status','?')}  updated={st.get('updated_at','?')}")
@@ -396,19 +456,42 @@ def show_detail(code: str = None):
           f"IMA:{sm.get('ima_ok',0)} Failed:{sm.get('annual_failed',0)+sm.get('quarterly_failed',0)}")
 
 
+def _pick_retryable_failed(q: dict) -> int | None:
+    """W40-#50 P1: 无 pending 时挑一个可重试的 failed 股票 (未超尝试上限
+    且已过退避窗口)。之前 failed 是终态, 后续 cron 永不再碰 — 与
+    bulk_download 自己声明的 '失败必须保持可重试' 直接矛盾。"""
+    now = datetime.now(TZ_CN)
+    for i, s in enumerate(q.get("stocks", [])):
+        if _is_retryable_failed(s, now):
+            return i
+    return None
+
+
 def process_next():
     if not QUEUE_FILE.exists():
         print("ERROR: no queue. Run --init first."); sys.exit(1)
-    q = json.loads(QUEUE_FILE.read_text())
+    q = _read_json_safe(QUEUE_FILE)
+    if q is None:
+        # W40-#50 P1: 队列文件损坏 (之前截断 JSON 会让每次 cron 在同一行
+        # 崩溃)。移 aside 后明确报错退出, 需人工 --init 重建, 但不再崩溃循环。
+        print("ERROR: queue file corrupted (moved aside). Run --init to rebuild.")
+        sys.exit(1)
     recovered = recover_stale_processing(q, PROCESSING_STALE_SECONDS)
     if recovered:
-        QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
+        _atomic_write_text(QUEUE_FILE, json.dumps(q, ensure_ascii=False, indent=2))
         print(f"Recovered stale processing rows: {', '.join(recovered)}")
 
     idx = next((i for i,s in enumerate(q["stocks"]) if s["status"]=="pending"), None)
     if idx is None:
+        # W40-#50 P1: failed 可重试 — pending 空了先试退避窗口外的 failed
+        idx = _pick_retryable_failed(q)
+        if idx is not None:
+            q["stocks"][idx]["status"] = "pending"
+            print(f"Retrying previously failed stock: {q['stocks'][idx]['code']}")
+    if idx is None:
         if has_unfinished_queue_items(q):
-            print("No pending stocks; waiting for active processing rows or stale recovery window.")
+            print("No pending stocks; waiting for active processing rows, stale "
+                  "recovery window, or failed-retry backoff.")
         else:
             print("All stocks processed!")
         show_status()
@@ -417,8 +500,9 @@ def process_next():
     stock = q["stocks"][idx]
     code, name, market = stock["code"], stock["name"], stock["market"]
     stock["status"] = "processing"
+    stock.pop("retry_of_failed", None)
     q["pending"] = max(0, q["pending"]-1)
-    QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
+    _atomic_write_text(QUEUE_FILE, json.dumps(q, ensure_ascii=False, indent=2))
 
     mflag = {"CN":"a","HK":"h","US":"m"}.get(market,"a")
     clean_code = code.replace(".US","").replace(".SH","").replace(".SZ","").replace(".HK","")
@@ -429,7 +513,9 @@ def process_next():
     timed_out = False
     returncode = 1
     try:
-        rc = subprocess.run(["python3", str(SCRIPT), "--code", clean_code,
+        # W40-#50 P1: sys.executable 而非裸 "python3" (PATH 可能解析到
+        # 没装 click/edgartools 的另一个解释器)
+        rc = subprocess.run([sys.executable, str(SCRIPT), "--code", clean_code,
                              "--market", mflag, "--name", name,
                              "--annual-years", "10", "--quarterly-years", "5"],
                             cwd=str(PROJECT_ROOT), timeout=3600)
@@ -442,14 +528,15 @@ def process_next():
     # 同步状态文件
     sf = _find_state(code)
     st = None
-    if sf:
-        st = json.loads(sf.read_text())
+    if sf and sf.exists():
+        st = _read_json_safe(sf)
+    if st is not None:
         if timed_out:
             st["interrupted"] = {
                 "reason": "scheduler timeout",
                 "at": datetime.now(TZ_CN).isoformat(),
             }
-            sf.write_text(json.dumps(st, ensure_ascii=False, indent=2))
+            _atomic_write_text(sf, json.dumps(st, ensure_ascii=False, indent=2))
         sm = get_state_summary(st)
         stock["annual_ok"] = sm.get("annual_ok",0)
         stock["quarterly_ok"] = sm.get("quarterly_ok",0)
@@ -460,18 +547,21 @@ def process_next():
         stock["status"] = "done"; q["done"] += 1
     else:
         stock["status"] = "failed"; q["failed"] += 1
+        stock["attempts"] = stock.get("attempts", 0) + 1
+        stock["failed_at"] = datetime.now(TZ_CN).isoformat()
         if timed_out:
             stock["failure_reason"] = "timeout"
 
     stock["updated_at"] = datetime.now(TZ_CN).isoformat()
     q["last_updated"] = datetime.now(TZ_CN).isoformat()
-    QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
+    reconcile_queue_counts(q)
+    _atomic_write_text(QUEUE_FILE, json.dumps(q, ensure_ascii=False, indent=2))
 
-    print(f"\n{stock['status']} {code} | A:{stock['annual_ok']} Q:{stock['quarterly_ok']} F:{stock['failures']}")
+    print(f"\n{stock['status']} {code} | "
+          f"A:{stock.get('annual_ok', 0)} Q:{stock.get('quarterly_ok', 0)} "
+          f"F:{stock.get('failures', 0)}")
     if stock.get("summary_text"):
         print(stock["summary_text"])
-    reconcile_queue_counts(q)
-    QUEUE_FILE.write_text(json.dumps(q, ensure_ascii=False, indent=2))
     if not has_unfinished_queue_items(q):
         print("All stocks processed!")
         show_status()

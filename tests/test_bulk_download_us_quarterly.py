@@ -160,4 +160,4 @@ def test_ima_sync_script_path_can_be_overridden(monkeypatch):
     monkeypatch.setenv("IMA_SYNC_SCRIPT_PATH", "/tmp/custom-sync-to-ima.sh")
     bulk = load_bulk_module()
 
-    assert str(bulk.IMA_SYNC_SCRIPT) == "/tmp/custom-sync-to-ima.sh"
+    assert str(bulk._resolve_ima_script()) == "/tmp/custom-sync-to-ima.sh"
