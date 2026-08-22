@@ -149,7 +149,7 @@ def test_download_one_us_uses_html_not_pdf(monkeypatch, tmp_path):
 
     monkeypatch.setattr(bulk, "run", fake_run)
 
-    assert bulk.download_one("AAPL", "US", "2025", "10q") == output
+    assert bulk.download_one("AAPL", "US", "2025", "10q") == (output, None)
     # W38: IMA 现在直接支持 HTML 上传, 美股不再 --pdf (commit 38b9f16 7-12 改)
     assert "--pdf" not in calls[0], "W38: 美股不再 --pdf (commit 38b9f16 7-12 改: IMA HTML 支持)"
     assert "--no-cache" not in calls[0]

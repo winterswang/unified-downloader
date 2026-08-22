@@ -21,6 +21,7 @@ from unified_downloader.exceptions import (
     NetworkError,
     ConversionError,
     TranslationError,
+    UnsupportedOperationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,23 +137,34 @@ class MStockAdapter(BaseStockAdapter):
         """下载美股文档"""
         doc_type_lower = document_type.lower()
 
-        if doc_type_lower in ["10k", "ten_k"]:
+        if doc_type_lower in self._ANNUAL_DOC_TYPES:
             return self._download_10k(code, year, datasource, checkpoint, on_progress, **kwargs)
-        elif doc_type_lower in ["10q", "ten_q"]:
+        elif doc_type_lower in self._QUARTERLY_DOC_TYPES:
+            # W40-#50: quarterly/interim_report/q1_report/q3_report 之前落 else
+            # 分支被当 10-K 年报下载（要季报给年报, 文件名标 20F, 无告警）
             return self._download_10q(code, year, datasource, checkpoint, on_progress, **kwargs)
-        elif doc_type_lower in ["s1", "s1a", "f1", "424b4", "prospectus"]:
+        elif doc_type_lower in self._PROSPECTUS_DOC_TYPES:
             return self._download_prospectus(
                 code, document_type, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["6k", "8k"]:
+        elif doc_type_lower == "6k":
             return self._download_6k(
                 code, year, datasource, checkpoint, on_progress,
                 report_period=kwargs.get("report_period"),
             )
-        elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
+        elif doc_type_lower == "8k":
+            # W40-#50: 8-K 之前跟 6k 一起进 _download_6k（内部硬编码 "6-K"），
+            # sync 下载 6-K 而 async 下载 8-K, 同一调用两个入口行为相反
+            return self._download_form(code, "8-K", year, checkpoint, on_progress)
+        elif doc_type_lower in self._TWENTY_F_DOC_TYPES:
             return self._download_form(code, "20-F", year, checkpoint, on_progress)
         else:
-            return self._download_10k(code, year, datasource, checkpoint, on_progress, **kwargs)
+            # W40-#50: 未知类型不再静默按 10-K 下载（错误数据入库），显式报错
+            raise UnsupportedOperationError(
+                f"美股市场不支持的文档类型: {document_type}"
+                f"（支持: 10k/annual_report, 10q/quarterly/q1_report/q3_report/"
+                f"interim_report, 6k, 8k, 20f, s1/f1/424b4/prospectus）"
+            )
 
     async def async_download(
         self,
@@ -168,29 +180,33 @@ class MStockAdapter(BaseStockAdapter):
         """异步下载美股文档"""
         doc_type_lower = document_type.lower()
 
-        if doc_type_lower in ["10k", "ten_k"]:
+        if doc_type_lower in self._ANNUAL_DOC_TYPES:
             return await self._async_download_10k(
                 http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
-        elif doc_type_lower in ["10q", "ten_q"]:
+        elif doc_type_lower in self._QUARTERLY_DOC_TYPES:
+            # W40-#50: 与 sync 分发对齐（之前 quarterly 家族落 else 被当 10-K）
             return await self._async_download_10q(
                 http_client, code, year, datasource, checkpoint, on_progress, **kwargs
             )
-        elif doc_type_lower in ["s1", "s1a", "f1", "424b4", "prospectus"]:
+        elif doc_type_lower in self._PROSPECTUS_DOC_TYPES:
             return await self._async_download_prospectus(
                 http_client, code, document_type, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["6k", "8k"]:
+        elif doc_type_lower in ("6k", "8k"):
             return await self._async_download_form(
                 http_client, code, "6-K" if doc_type_lower == "6k" else "8-K", year, checkpoint, on_progress
             )
-        elif doc_type_lower in ["20f", "20-f", "twenty_f"]:
+        elif doc_type_lower in self._TWENTY_F_DOC_TYPES:
             return await self._async_download_form(
                 http_client, code, "20-F", year, checkpoint, on_progress
             )
         else:
-            return await self._async_download_10k(
-                http_client, code, year, datasource, checkpoint, on_progress, **kwargs
+            # W40-#50: 未知类型不再静默按 10-K 下载，显式报错（与 sync 一致）
+            raise UnsupportedOperationError(
+                f"美股市场不支持的文档类型: {document_type}"
+                f"（支持: 10k/annual_report, 10q/quarterly/q1_report/q3_report/"
+                f"interim_report, 6k, 8k, 20f, s1/f1/424b4/prospectus）"
             )
 
     def _search_edgar(
@@ -788,6 +804,29 @@ class MStockAdapter(BaseStockAdapter):
                     success=False,
                     error_code="PDF_TOO_SMALL",
                     error_message=f"{url} returned {file_size} bytes (< 1KB, likely 404 page)",
+                )
+
+            # W40-#50: >1KB 的品牌化 404/HTML 错误页之前被当 PDF success 入库。
+            # 校验 %PDF- magic header（PDF spec 允许 header 出现在前 1024 字节内，
+            # 兼容前面有少量垃圾字节的合法 PDF）。
+            try:
+                with open(file_path, "rb") as f:
+                    head = f.read(1024)
+            except OSError as read_err:
+                return DownloadResult(
+                    success=False,
+                    error_code="CUSTOM_IR_DOWNLOAD_ERROR",
+                    error_message=f"{url} read-back failed: {read_err}",
+                )
+            if b"%PDF-" not in head:
+                file_path.unlink(missing_ok=True)
+                return DownloadResult(
+                    success=False,
+                    error_code="PDF_INVALID_CONTENT",
+                    error_message=(
+                        f"{url} returned non-PDF content "
+                        f"(no %PDF- header in first 1024 bytes, likely HTML error page)"
+                    ),
                 )
 
             return DownloadResult(
@@ -1573,6 +1612,17 @@ class MStockAdapter(BaseStockAdapter):
     # 触发 IMA 后端不索引 body content（仅 record 元数据）
     # 招股书图片重要性低，跳过 embed 直接传主 HTML 即可
     _PROSPECTUS_FORMS = frozenset({"S-1", "S-1/A", "F-1", "F-1/A", "424B4", "424B3", "424B5"})
+
+    # W40-#50: download()/async_download() 共用的 doc_type 分发表（防 sync/async drift）。
+    # 回归背景: quarterly/interim_report/q1_report/q3_report 是 CLI -t 允许的类型,
+    # 之前在 sync 分发里落到 else 分支被当 10-K 年报下载（要季报给年报, 无告警）;
+    # annual_report 是 CLI/MCP 的默认类型, 必须显式映射而不是靠 else 兜底。
+    _ANNUAL_DOC_TYPES = frozenset({"10k", "ten_k", "annual_report"})
+    _QUARTERLY_DOC_TYPES = frozenset(
+        {"10q", "ten_q", "quarterly", "q1_report", "q3_report", "interim_report"}
+    )
+    _PROSPECTUS_DOC_TYPES = frozenset({"s1", "s1a", "f1", "424b4", "prospectus"})
+    _TWENTY_F_DOC_TYPES = frozenset({"20f", "20-f", "twenty_f"})
 
     @classmethod
     def _normalize_form_type(cls, form_type: str) -> str:
