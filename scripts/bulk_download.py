@@ -100,6 +100,15 @@ def search_docs(code, market, rtype, limit=50):
     return docs
 
 def download_one(code, market, year, rtype, retries=3):
+    """下载单份文档。返回 (file_path, reason):
+
+    - (path, None)      成功
+    - (None, "not_found") 数据源确认无该文档（输出命中关键词），记 skipped 合理
+    - (None, "failed")  重试耗尽的真实失败（网络/限流/超时/UNEXPECTED_ERROR），
+                        必须按失败处理。W40-#50: 之前与 not_found 混为同一个
+                        None，被记 skipped + 退出码 0 → scheduler 标 done，
+                        真实失败被静默吞掉。
+    """
     flag = MARKET_FLAGS[market]
     for n in range(retries + 1):
         if n > 0:
@@ -124,12 +133,12 @@ def download_one(code, market, year, rtype, retries=3):
             # if market == "US" and fpath.suffix.lower() not in (".pdf",):
             #     log.error("  US download did not produce PDF: %s", fpath)
             #     return None
-            return fpath
+            return fpath, None
         combined = (out+err).lower()
         if any(kw in combined for kw in ["not found","no document","no data","无数据","no matching","暂无"]):
-            return None
+            return None, "not_found"
     log.error("  FAILED after %d retries", retries)
-    return None
+    return None, "failed"
 
 def validate_file(fpath):
     if not fpath or not fpath.exists():
@@ -353,7 +362,7 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
 
         if year in avail:
             log.info("  [%s] Downloading...", year)
-            fpath = download_one(dl_code, search_mkt_for_ann, year, ann_type)
+            fpath, dl_reason = download_one(dl_code, search_mkt_for_ann, year, ann_type)
             if fpath and validate_file(fpath):
                 fsize = fpath.stat().st_size
                 set_doc_status(state, "annual", year, "", "downloaded", fpath, fsize=fsize)
@@ -369,12 +378,19 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
                 set_doc_status(state, "annual", year, "", "download_failed", reason="validation failed")
                 failures.append(f"{year} annual: validation failed")
                 log_failure(code, name, f"{year} annual: validation failed")
+            elif dl_reason == "not_found":
+                set_doc_status(state, "annual", year, "", "skipped", reason="not available")
             else:
-                set_doc_status(state, "annual", year, "", "skipped", reason="download returned no file / not found")
+                # W40-#50: 重试耗尽的真实失败按失败处理（之前记 skipped +
+                # 退出码 0 被 scheduler 标 done 静默吞掉）
+                set_doc_status(state, "annual", year, "", "download_failed",
+                               reason="download failed after retries")
+                failures.append(f"{year} annual: download failed after retries")
+                log_failure(code, name, f"{year} annual: download failed after retries")
         else:
             # Try download anyway
             log.info("  [%s] Not in search, trying...", year)
-            fpath = download_one(dl_code, search_mkt_for_ann, year, ann_type)
+            fpath, dl_reason = download_one(dl_code, search_mkt_for_ann, year, ann_type)
             if fpath and validate_file(fpath):
                 fsize = fpath.stat().st_size
                 set_doc_status(state, "annual", year, "", "downloaded", fpath, fsize=fsize)
@@ -385,10 +401,18 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
                     set_doc_status(state, "annual", year, "", "ima_failed", fpath, fsize=fsize)
                     failures.append(f"{year} annual: IMA upload failed")
             elif fpath:
+                # W40-#50: 与 in-avail 分支对齐，校验失败按失败处理（之前记 skipped）
                 fpath.unlink(missing_ok=True)
-                set_doc_status(state, "annual", year, "", "skipped", reason="download invalid")
-            else:
+                set_doc_status(state, "annual", year, "", "download_failed", reason="validation failed")
+                failures.append(f"{year} annual: validation failed")
+                log_failure(code, name, f"{year} annual: validation failed")
+            elif dl_reason == "not_found":
                 set_doc_status(state, "annual", year, "", "skipped", reason="not available")
+            else:
+                set_doc_status(state, "annual", year, "", "download_failed",
+                               reason="download failed after retries")
+                failures.append(f"{year} annual: download failed after retries")
+                log_failure(code, name, f"{year} annual: download failed after retries")
         save_state(state)
 
     # ── 季报 ──
@@ -409,7 +433,7 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
 
                 if year in avail:
                     log.info("  [%s %s] Downloading...", year, qlabel)
-                    fpath = download_one(dl_code, search_mkt_for_q, year, qtype)
+                    fpath, dl_reason = download_one(dl_code, search_mkt_for_q, year, qtype)
                     if fpath and validate_file(fpath):
                         fsize = fpath.stat().st_size
                         set_doc_status(state, "quarterly", year, qlabel, "downloaded", fpath, fsize=fsize, form_type=qtype)
@@ -422,8 +446,23 @@ def process_stock(code, market, name, annual_years=10, quarterly_years=5):
                     elif fpath:
                         fpath.unlink(missing_ok=True)
                         set_doc_status(state, "quarterly", year, qlabel, "download_failed", reason="validation failed", form_type=qtype)
+                        # W40-#50: 季报校验失败之前不计入 failures（年报分支计），
+                        # 状态误判 ok + 退出码 0
+                        failures.append(f"{year} {qlabel}: validation failed")
+                        log_failure(code, name, f"{year} {qlabel}: validation failed")
+                    elif dl_reason == "not_found":
+                        # 与 not-in-avail 分支同样加防护: 后备 form 的
+                        # "无文档" 不能覆盖另一 form 已记录的失败/成果
+                        if should_mark_quarterly_unavailable(state, year, qlabel, qtype):
+                            set_doc_status(state, "quarterly", year, qlabel, "skipped", reason="not available", form_type=qtype)
+                        else:
+                            log.info("  [%s %s] Not available, keeping existing material result", year, qlabel)
                     else:
-                        set_doc_status(state, "quarterly", year, qlabel, "skipped", reason="not available", form_type=qtype)
+                        # W40-#50: 重试耗尽的真实失败按失败处理（之前记 skipped）
+                        set_doc_status(state, "quarterly", year, qlabel, "download_failed",
+                                       reason="download failed after retries", form_type=qtype)
+                        failures.append(f"{year} {qlabel}: download failed after retries")
+                        log_failure(code, name, f"{year} {qlabel}: download failed after retries")
                 else:
                     if should_mark_quarterly_unavailable(state, year, qlabel, qtype):
                         set_doc_status(state, "quarterly", year, qlabel, "skipped", reason="not available", form_type=qtype)
