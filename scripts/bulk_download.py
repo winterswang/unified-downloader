@@ -50,9 +50,23 @@ log = logging.getLogger("bulk")
 # ── 路径常量 ──
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = PROJECT_ROOT / "data" / "bulk_state"
-DEFAULT_IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
-IMA_SYNC_SCRIPT = Path(os.environ.get("IMA_SYNC_SCRIPT_PATH", DEFAULT_IMA_SYNC_SCRIPT))
+# W40-#50 P1: 旧默认路径在仓库外 (~/.openclaw/...), 不在版本控制,
+# 新机器部署即所有 IMA 上传失败。标准位置是仓库内 scripts/sync_to_ima.sh
+# (需从服务器 ~/.openclaw 拷一次进来, 见 issue #50), 旧路径仅作 fallback。
+LEGACY_IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
 TZ_CN = timezone(timedelta(hours=8))
+
+
+def _resolve_ima_script() -> Path:
+    """IMA 同步脚本查找链: 环境变量 → 仓库内 scripts/sync_to_ima.sh →
+    旧 ~/.openclaw 路径。调用时解析 (非模块加载时), 进程内改 env 也生效。"""
+    env = os.environ.get("IMA_SYNC_SCRIPT_PATH")
+    if env:
+        return Path(env)
+    in_repo = PROJECT_ROOT / "scripts" / "sync_to_ima.sh"
+    if in_repo.exists():
+        return in_repo
+    return LEGACY_IMA_SYNC_SCRIPT
 
 ANNUAL_MAP = {"CN": "annual_report", "HK": "annual_report", "US": "10k", "US_20F": "20f"}
 QUARTERLY_MAP = {
@@ -67,8 +81,45 @@ MARKET_FLAGS = {"CN": "a", "HK": "h", "US": "m"}
 
 
 def run(cmd, timeout=120):
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(PROJECT_ROOT))
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
+    """跑子命令。W40-#50 P1: TimeoutExpired 不再穿透 — 之前一次 SEC 搜索
+    超时 30s 即抛异常中断 process_stock 该股票全部剩余年份/季报。
+    超时统一返回 rc=124 (同 timeout(1) 惯例), 由调用方按失败/重试处理。"""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(PROJECT_ROOT))
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired as e:
+        def _s(v):
+            return v.decode("utf-8", "replace").strip() if isinstance(v, bytes) else (v or "").strip()
+        err = _s(e.stderr) or f"timeout after {timeout}s"
+        if f"timeout after {timeout}s" not in err:
+            err = f"{err} (timeout after {timeout}s)"
+        return 124, _s(e.stdout), err
+
+
+def _atomic_write_text(path: Path, text: str):
+    """tmp+rename 原子写。W40-#50 P1: 之前直接 write_text, scheduler 3600s
+    超时 kill 可能落在写一半 → 截断 JSON → 下次 cron json.loads 崩溃且
+    每次在同一点崩, 队列永久卡死需人工删文件。"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_json_safe(path: Path):
+    """读 JSON; 损坏 (截断/非法 JSON) 时把坏文件移 aside 保留排查并返回
+    None, 不让单个坏文件炸掉整个批次。"""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        corrupt = path.with_suffix(
+            path.suffix + f".corrupt-{datetime.now(TZ_CN).strftime('%Y%m%d%H%M%S')}"
+        )
+        try:
+            path.replace(corrupt)
+            log.error("State file corrupted, moved aside: %s -> %s (%s)", path, corrupt, e)
+        except OSError:
+            log.error("State file corrupted and could not be moved aside: %s (%s)", path, e)
+        return None
 
 # W36: 复用 unified_downloader.utils.adr_map, 避免跟 m_stock 重复实现.
 # 老代码 (load_adr_map / _us_key_variants / _lookup_us_map / resolve_target)
@@ -88,7 +139,9 @@ def quarterly_search_market(is_adr_hk, is_20f, mkt_key):
 
 def search_docs(code, market, rtype, limit=50):
     flag = MARKET_FLAGS[market]
-    rc, out, _ = run(["python3","-m","unified_downloader.cli","search","list",code,
+    # W40-#50 P1: sys.executable 而非裸 "python3" — 用当前解释器 (服务器
+    # /usr/bin/python3 或本地 venv), 避免子进程解析到没有依赖的另一个 python
+    rc, out, _ = run([sys.executable,"-m","unified_downloader.cli","search","list",code,
                       "-t",rtype,"-m",flag,"-l",str(limit)], timeout=30)
     docs = []
     for line in out.split("\n"):
@@ -115,7 +168,7 @@ def download_one(code, market, year, rtype, retries=3):
             delay = [10,30,60][n-1]
             log.warning("Retry %d/%d after %ds", n, retries, delay)
             time.sleep(delay)
-        cmd = ["python3", "-m", "unified_downloader.cli", "download", "single",
+        cmd = [sys.executable, "-m", "unified_downloader.cli", "download", "single",
                code, "-y", year, "-t", rtype, "-m", flag]
         # IMA现在直接支持HTML上传，不需要转PDF；图片已自动内嵌为base64
         # if market == "US":
@@ -152,10 +205,12 @@ def validate_file(fpath):
     return True
 
 def upload_ima(fpath, kb="年报季度报知识库"):
-    if not IMA_SYNC_SCRIPT.exists():
-        log.error("    IMA sync script missing: %s", IMA_SYNC_SCRIPT)
+    ima_script = _resolve_ima_script()
+    if not ima_script.exists():
+        log.error("    IMA sync script missing: %s (set IMA_SYNC_SCRIPT_PATH or put "
+                  "scripts/sync_to_ima.sh in repo)", ima_script)
         return False
-    rc, out, err = run(["bash", str(IMA_SYNC_SCRIPT), "--file", str(fpath),
+    rc, out, err = run(["bash", str(ima_script), "--file", str(fpath),
                         "--kb-name", kb, "--force"], timeout=300)
     combined = out + "\n" + err
     lower = combined.lower()
@@ -197,11 +252,14 @@ def log_failure(code, name, detail):
 # ── 状态管理 ──
 
 def load_state(code: str) -> dict:
-    """加载单只股票的状态文件"""
+    """加载单只股票的状态文件。损坏文件移 aside 后返回全新状态
+    (比之前 json.loads 直接崩、整只股票中断要好)。"""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     f = STATE_DIR / f"{code}.json"
     if f.exists():
-        return json.loads(f.read_text())
+        st = _read_json_safe(f)
+        if st is not None:
+            return st
     return {
         "code": code, "annual": {}, "quarterly": {},
         "created_at": datetime.now(TZ_CN).isoformat(),
@@ -210,7 +268,10 @@ def load_state(code: str) -> dict:
 def save_state(state: dict):
     code = state["code"]
     state["updated_at"] = datetime.now(TZ_CN).isoformat()
-    (STATE_DIR / f"{code}.json").write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    _atomic_write_text(
+        STATE_DIR / f"{code}.json",
+        json.dumps(state, ensure_ascii=False, indent=2),
+    )
 
 def set_doc_status(state: dict, category: str, year: str, quarter: str,
                    status: str, filepath=None, reason=None, fsize=None, form_type=None):

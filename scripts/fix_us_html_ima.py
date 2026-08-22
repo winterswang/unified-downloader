@@ -120,8 +120,10 @@ def convert_local_html(old_file: str) -> Path | None:
 
 
 def download_pdf(code: str, year: str, form_type: str) -> Path | None:
+    # W40-#50 P1: sys.executable 而非裸 "python3" (避免 PATH 解析到
+    # 没装依赖的另一个解释器)
     cmd = [
-        "python3", "-m", "unified_downloader.cli", "download", "single",
+        sys.executable, "-m", "unified_downloader.cli", "download", "single",
         code, "-y", year, "-t", form_type, "-m", "m", "--pdf", "--no-cache",
     ]
     rc, out, err = run(cmd, timeout=240)
