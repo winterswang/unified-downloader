@@ -1,9 +1,11 @@
 """异步下载器"""
 
 import asyncio
+import logging
+import time
 from typing import Optional, List, Dict, Any, Callable
 
-from unified_downloader.models.enums import Market
+from unified_downloader.models.enums import Market, EventType
 from unified_downloader.models.entities import (
     DownloadResult,
     BatchResult,
@@ -14,6 +16,8 @@ from unified_downloader.models.callbacks import ProgressCallbackType
 from unified_downloader.core.downloader import UnifiedDownloader
 from unified_downloader.core.config import Config, get_default_config
 from unified_downloader.infra import AsyncHTTPClient
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncUnifiedDownloader:
@@ -32,8 +36,12 @@ class AsyncUnifiedDownloader:
     """
 
     def __init__(self, config: Optional[Config] = None):
-        self.config = config or Config()
-        self._downloader = UnifiedDownloader(config)
+        # W40-#50 P1: 之前 self.config 用裸 Config() (不读 config.yaml),
+        # 而 UnifiedDownloader(config=None) 内部又用 get_default_config() —
+        # 两个不同配置实例, cache_enabled 等检查项与实际行为不一致。
+        # 统一为同一个 config (无参时读默认配置)。
+        self.config = config or get_default_config()
+        self._downloader = UnifiedDownloader(self.config)
         self._async_http_client = AsyncHTTPClient()
 
     async def download(
@@ -50,7 +58,8 @@ class AsyncUnifiedDownloader:
         # 如果不使用缓存，直接调用适配器的异步方法
         if not use_cache or not self.config.download.cache_enabled:
             return await self._download_direct(
-                code, year, document_type, market, on_progress, **kwargs
+                code, year, document_type, market, on_progress,
+                use_cache=use_cache, **kwargs
             )
 
         # 检查缓存
@@ -73,7 +82,8 @@ class AsyncUnifiedDownloader:
 
         # 执行下载
         return await self._download_direct(
-            code, year, document_type, market, on_progress, **kwargs
+            code, year, document_type, market, on_progress,
+            use_cache=use_cache, **kwargs
         )
 
     async def _download_direct(
@@ -83,9 +93,12 @@ class AsyncUnifiedDownloader:
         document_type: str,
         market: Optional[Market],
         on_progress: Optional[ProgressCallbackType],
+        use_cache: bool = True,
         **kwargs,
     ) -> DownloadResult:
         """直接下载（不检查缓存）"""
+        start_time = time.time()
+
         if market is None:
             market = self._downloader._detect_market(code)
 
@@ -97,7 +110,32 @@ class AsyncUnifiedDownloader:
                 error_message="无法识别市场",
             )
 
-        return await adapter.async_download(
+        # W40-#50 P1: 之前异步路径完全不碰熔断器 (批量跑时熔断永不打开,
+        # 故障源被无限打) 也不写审计日志。与同步路径对齐。
+        breaker = self._downloader._circuit_breaker_manager.get_breaker(
+            market.value
+        )
+        if not breaker.can_execute():
+            duration_ms = int((time.time() - start_time) * 1000)
+            self._downloader._log_event(
+                EventType.CIRCUIT_OPEN,
+                market, code, year, document_type,
+                False,
+                error_code="CIRCUIT_BREAKER_OPEN",
+                duration_ms=duration_ms,
+            )
+            return DownloadResult(
+                success=False,
+                error_code="CIRCUIT_BREAKER_OPEN",
+                error_message=f"市场 {market.value} 的熔断器已开启，请稍后再试",
+                duration_ms=duration_ms,
+            )
+
+        self._downloader._log_event(
+            EventType.DOWNLOAD_START, market, code, year, document_type, True
+        )
+
+        result = await adapter.async_download(
             http_client=self._async_http_client,
             code=code,
             year=year,
@@ -105,6 +143,51 @@ class AsyncUnifiedDownloader:
             on_progress=on_progress,
             **kwargs,
         )
+
+        duration_ms = int((time.time() - start_time) * 1000)
+        result.duration_ms = duration_ms
+
+        if result.success:
+            breaker.record_success()
+            self._downloader._log_event(
+                EventType.DOWNLOAD_COMPLETE,
+                market, code, year, document_type,
+                True,
+                duration_ms=duration_ms,
+                file_size=result.file_size,
+                source=result.source,
+            )
+            # W40-#50 P1: 之前异步下载的成果永远进不了缓存 (无任何 put
+            # 调用, 缓存只能命中同步路径写入的条目)
+            if (
+                use_cache
+                and self.config.download.cache_enabled
+                and result.file_path
+            ):
+                try:
+                    self._downloader._cache_manager.put(
+                        market.value,
+                        code,
+                        year,
+                        document_type,
+                        file_path=result.file_path,
+                    )
+                except Exception as cache_err:
+                    logger.warning(
+                        f"Cache write failed (download itself succeeded): {cache_err}"
+                    )
+        else:
+            breaker.record_failure()
+            self._downloader._log_event(
+                EventType.DOWNLOAD_FAILED,
+                market, code, year, document_type,
+                False,
+                error_code=result.error_code,
+                error_message=result.error_message,
+                duration_ms=duration_ms,
+            )
+
+        return result
 
     async def batch_download(
         self,

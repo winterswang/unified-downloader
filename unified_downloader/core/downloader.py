@@ -37,6 +37,7 @@ from unified_downloader.core.config import Config, get_default_config
 from unified_downloader.exceptions import (
     MarketUnrecognizedError,
     CircuitBreakerOpenError,
+    CheckpointError,
 )
 
 
@@ -107,7 +108,11 @@ class UnifiedDownloader:
             checkpoint_dir=self.config.checkpoint_dir,
         )
 
-        self._circuit_breaker_manager = CircuitBreakerManager()
+        # W40-#50 P1: 传入 config.circuit_breaker — 之前 YAML 里的熔断配置
+        # 因 manager/get_breaker 都不传参被静默丢弃
+        self._circuit_breaker_manager = CircuitBreakerManager(
+            default_config=self.config.circuit_breaker
+        )
 
         self._audit_logger = (
             AuditLogger(
@@ -201,11 +206,22 @@ class UnifiedDownloader:
         # 检查断点
         checkpoint = None
         if self.config.download.checkpoint_enabled:
-            checkpoint = self._checkpoint_manager.resume(task_id, f"{market}:{code}")
+            # W40-#50 P1: 断点读失败 (损坏等) 不再毒化该 task_id 的全部
+            # 后续下载 — 当作无断点从头下载
+            try:
+                checkpoint = self._checkpoint_manager.resume(
+                    task_id, f"{market}:{code}"
+                )
+            except CheckpointError as e:
+                logger.warning(f"Checkpoint resume failed, downloading fresh: {e}")
+                checkpoint = None
 
         # 检查熔断器
+        # W40-#50 P1: 用 can_execute() 而非 is_open — half_open 状态下
+        # is_open 为 False, 之前 5 个线程会同时涌向刚恢复的源,
+        # "半开最多放 N 个试探请求" 的设计完全没生效
         breaker = self._circuit_breaker_manager.get_breaker(market.value)
-        if breaker.is_open:
+        if not breaker.can_execute():
             duration_ms = int((time.time() - start_time) * 1000)
             self._log_event(
                 EventType.CIRCUIT_OPEN,
@@ -230,16 +246,24 @@ class UnifiedDownloader:
             raise MarketUnrecognizedError(code)
 
         # 临时覆盖 PDF 转换设置
+        # W40-#50 P1: 之前直接改共享 adapter 的私有标志且从不恢复 —
+        # 调一次 convert_to_pdf=True 后, 之后所有 convert_to_pdf=None 的
+        # 调用也静默转 PDF; batch_download 线程池并发任务互相污染。
+        # 现在 try/finally 恢复原值。
+        _saved_flags = {}
         if convert_to_pdf is not None and market == Market.M:
+            _saved_flags["_convert_to_pdf"] = adapter._convert_to_pdf  # type: ignore[attr-defined]
             adapter._convert_to_pdf = convert_to_pdf  # type: ignore[attr-defined]
 
         # --no-cache 同时跳过翻译缓存
         if not use_cache and market == Market.M:
+            _saved_flags["_use_translate_cache"] = adapter._use_translate_cache  # type: ignore[attr-defined]
             adapter._use_translate_cache = False  # type: ignore[attr-defined]
 
         # 临时覆盖翻译设置
         if translate is not None:
             if market == Market.M:
+                _saved_flags["_translate_enabled"] = adapter._translate_enabled  # type: ignore[attr-defined]
                 adapter._translate_enabled = translate  # type: ignore[attr-defined]
             elif translate:
                 logger.warning(
@@ -285,13 +309,22 @@ class UnifiedDownloader:
                     and self.config.download.cache_enabled
                     and result.file_path
                 ):
-                    self._cache_manager.put(
-                        market.value,
-                        code,
-                        year,
-                        document_type,
-                        file_path=result.file_path,
-                    )
+                    # W40-#50 P1: 缓存写失败不应把成功下载记为市场失败 —
+                    # 之前 sqlite locked / 磁盘满会穿透到 except Exception,
+                    # 用户拿到 UNEXPECTED_ERROR (文件其实已完整落盘), 且
+                    # 连续 5 次缓存故障误开该市场熔断器
+                    try:
+                        self._cache_manager.put(
+                            market.value,
+                            code,
+                            year,
+                            document_type,
+                            file_path=result.file_path,
+                        )
+                    except Exception as cache_err:
+                        logger.warning(
+                            f"Cache write failed (download itself succeeded): {cache_err}"
+                        )
 
                 # 清理断点
                 if self.config.download.checkpoint_enabled:
@@ -351,6 +384,13 @@ class UnifiedDownloader:
                 error_message=str(e),
                 duration_ms=duration_ms,
             )
+        finally:
+            # W40-#50 P1: 恢复临时覆盖的 adapter 标志 (之前永久污染)
+            for _attr, _old in _saved_flags.items():
+                try:
+                    setattr(adapter, _attr, _old)
+                except Exception:
+                    pass
 
 
     def _restore_semantic_cache_path(

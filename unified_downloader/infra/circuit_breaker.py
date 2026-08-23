@@ -1,5 +1,6 @@
 """熔断器实现"""
 
+import threading
 from enum import Enum
 from typing import Optional, Callable, Any, Dict
 from dataclasses import dataclass
@@ -40,6 +41,12 @@ class CircuitBreaker:
     ):
         self.name = name
         self.config = config or CircuitBreakerConfig()
+        # W40-#50 P1: 之前全文件无锁 — batch_download 的线程池并发调
+        # record_failure (_failure_count += 1 非原子) / record_success
+        # (= 0 直接清零) 互相覆盖, 失败计数可能永远到不了阈值;
+        # state property 在读操作里做状态迁移同样有竞态。RLock 允许
+        # property 与 mutating method 嵌套。
+        self._lock = threading.RLock()
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
@@ -50,13 +57,14 @@ class CircuitBreaker:
     @property
     def state(self) -> CircuitState:
         """获取当前状态"""
-        if self._state == CircuitState.OPEN:
-            # 检查是否应该转换到半开状态
-            if self._last_failure_time:
-                elapsed = (datetime.now() - self._last_failure_time).total_seconds()
-                if elapsed >= self.config.timeout:
-                    self._transition_to(CircuitState.HALF_OPEN)
-        return self._state
+        with self._lock:
+            if self._state == CircuitState.OPEN:
+                # 检查是否应该转换到半开状态
+                if self._last_failure_time:
+                    elapsed = (datetime.now() - self._last_failure_time).total_seconds()
+                    if elapsed >= self.config.timeout:
+                        self._transition_to(CircuitState.HALF_OPEN)
+            return self._state
 
     @property
     def is_closed(self) -> bool:
@@ -75,6 +83,10 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         """记录成功调用"""
+        with self._lock:
+            self._record_success_unlocked()
+
+    def _record_success_unlocked(self) -> None:
         if self._state == CircuitState.HALF_OPEN:
             self._success_count += 1
             if self._success_count >= self.config.success_threshold:
@@ -84,6 +96,10 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         """记录失败调用"""
+        with self._lock:
+            self._record_failure_unlocked()
+
+    def _record_failure_unlocked(self) -> None:
         self._failure_count += 1
         self._last_failure_time = datetime.now()
 
@@ -112,6 +128,10 @@ class CircuitBreaker:
 
     def can_execute(self) -> bool:
         """检查是否可以执行"""
+        with self._lock:
+            return self._can_execute_unlocked()
+
+    def _can_execute_unlocked(self) -> bool:
         if self.state == CircuitState.CLOSED:
             return True
 
@@ -142,14 +162,20 @@ class CircuitBreaker:
 
         try:
             result = func(*args, **kwargs)
-            self.record_success()
+            with self._lock:
+                self._record_success_unlocked()
             return result
         except Exception:
-            self.record_failure()
+            with self._lock:
+                self._record_failure_unlocked()
             raise
 
     def get_status(self) -> Dict[str, Any]:
         """获取熔断器状态"""
+        with self._lock:
+            return self._get_status_unlocked()
+
+    def _get_status_unlocked(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "state": self.state.value,
@@ -163,7 +189,8 @@ class CircuitBreaker:
 
     def reset(self) -> None:
         """重置熔断器"""
-        self._transition_to(CircuitState.CLOSED)
+        with self._lock:
+            self._transition_to(CircuitState.CLOSED)
 
 
 class CircuitBreakerManager:
@@ -173,15 +200,21 @@ class CircuitBreakerManager:
     管理多个市场的熔断器
     """
 
-    def __init__(self):
+    def __init__(self, default_config: Optional[CircuitBreakerConfig] = None):
         self._breakers: Dict[str, CircuitBreaker] = {}
+        # W40-#50 P1: 之前 Config.from_dict 精心解析的 circuit_breaker
+        # 配置因 manager/get_breaker 都不传参被静默丢弃 (YAML 设
+        # failure_threshold: 10 实际仍是默认 5)
+        self._default_config = default_config
 
     def get_breaker(
         self, market: str, config: Optional[CircuitBreakerConfig] = None
     ) -> CircuitBreaker:
         """获取或创建熔断器"""
         if market not in self._breakers:
-            self._breakers[market] = CircuitBreaker(market, config)
+            self._breakers[market] = CircuitBreaker(
+                market, config or self._default_config
+            )
         return self._breakers[market]
 
     def get_all_status(self) -> Dict[str, Dict[str, Any]]:
