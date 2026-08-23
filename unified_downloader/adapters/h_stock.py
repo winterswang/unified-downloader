@@ -553,6 +553,19 @@ class HStockAdapter(BaseStockAdapter):
         # 获取第一个文档
         doc = documents[0]
         file_link = doc.get("file_link", "")
+        file_info = doc.get("file_info", "")
+        # W40-#50: 多檔案防护 — 之前只有招股书路径检查, 年报/中报路径会把
+        # 多檔案条目的索引页当正文下载
+        if "多檔案" in file_info:
+            return DownloadResult(
+                success=False,
+                error_code="MULTI_FILE",
+                error_message=(
+                    f"{stock_code} {year or '最新'} 报告为多檔案类型，无法直接下载 PDF。"
+                    "请访问港交所披露易网页查看: "
+                    "https://www1.hkexnews.hk/search/titlesearch.xhtml"
+                ),
+            )
         if not file_link:
             return DownloadResult(
                 success=False,

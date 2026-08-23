@@ -49,6 +49,13 @@ def patch_babeldoc_translator():
 
 if __name__ == "__main__":
     patch_babeldoc_translator()
+    # W40-#50: API key 经环境变量传入 (父进程 argv 不含 key, ps 不可见);
+    # 这里补进 sys.argv 供 babeldoc 的 argparse 使用 — 进程已 exec,
+    # 运行期改 sys.argv 不会反映到内核 cmdline, ps 仍然不可见
+    import os
+    _key = os.environ.get("UNIFIED_DOWNLOADER_TRANSLATE_KEY", "")
+    if _key and "--openai-api-key" not in sys.argv:
+        sys.argv.extend(["--openai-api-key", _key])
     from babeldoc.main import main
     import asyncio
 

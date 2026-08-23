@@ -58,6 +58,20 @@ def _report_period_target_end(report_period):
         return None
 
 
+def _resolve_sec_user_agent(cfg) -> str:
+    """构造 SEC 请求 User-Agent (W40-#50: 从 _download_filing 内联抽出可测).
+
+    W36 背景: 以前用 `os.environ.get("USER") + "..."`, cron wrapper/systemd
+    会 strip USER env → None + str → TypeError (META 26Q2 7-29 实际故障)。
+    优先级: config 显式配置 > SEC_USER_AGENT env > USER 兜底 "Unknown"。
+    """
+    user = os.environ.get("USER") or "Unknown"
+    cfg_ua = getattr(cfg, "sec_user_agent", None)
+    return cfg_ua or os.environ.get(
+        "SEC_USER_AGENT", f"{user}/contact@example.com Research Tool/1.0"
+    )
+
+
 def _primary_doc_ext(link: str) -> str:
     """primary doc 链接 → 保存扩展名。
 
@@ -1341,10 +1355,7 @@ class MStockAdapter(BaseStockAdapter):
             # os.environ.get("USER") 返回 None → None + str → TypeError.
             # META 26Q2 7-29 早上报这个错, download_status=FAILED.
             # 修: `or "Unknown"` 兜底, 跟 m_stock 其他 getattr 模式一致.
-            user = os.environ.get("USER") or "Unknown"
-            sec_ua = cfg.sec_user_agent or os.environ.get(
-                "SEC_USER_AGENT", f"{user}/contact@example.com Research Tool/1.0"
-            )
+            sec_ua = _resolve_sec_user_agent(cfg)
         headers = {
             "User-Agent": sec_ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

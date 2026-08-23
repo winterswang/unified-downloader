@@ -14,6 +14,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# W40-#50: compute_summary 统一到 bulk_common (原本地副本即严格版语义)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bulk_common import compute_summary as _common_compute_summary  # noqa: E402
 QUEUE_FILE = PROJECT_ROOT / "data" / "bulk_download_queue.json"
 STATE_DIR = PROJECT_ROOT / "data" / "bulk_state"
 LOG_FILE = PROJECT_ROOT / "logs" / "bulk_download.log"
@@ -199,44 +203,9 @@ def _is_ima_failure(value: str | None) -> bool:
 
 
 def compute_summary_from_state(st: dict) -> dict:
-    """Compute summary from per-document state.
-
-    The per-document records are the source of truth.  Older state files may have
-    stale/optimistic ``summary`` blocks, and IMA failures can be represented by
-    specific reason strings such as ``semantic_upload_rate_limited`` rather than
-    exactly ``failed``.
-    """
-    sm = {
-        "annual_ok": 0, "annual_skipped": 0, "annual_failed": 0,
-        "quarterly_ok": 0, "quarterly_skipped": 0, "quarterly_failed": 0,
-        "ima_ok": 0, "ima_failed": 0,
-    }
-    for d in st.get("annual", {}).values():
-        status = d.get("status", "")
-        if status == "uploaded" or (status == "downloaded" and not _is_ima_failure(d.get("ima"))):
-            sm["annual_ok"] += 1
-        elif status == "skipped":
-            sm["annual_skipped"] += 1
-        elif "failed" in status:
-            sm["annual_failed"] += 1
-        if _is_ima_success(d.get("ima")):
-            sm["ima_ok"] += 1
-        elif _is_ima_failure(d.get("ima")) or status == "ima_failed":
-            sm["ima_failed"] += 1
-    for qs in st.get("quarterly", {}).values():
-        for d in qs.values():
-            status = d.get("status", "")
-            if status == "uploaded" or (status == "downloaded" and not _is_ima_failure(d.get("ima"))):
-                sm["quarterly_ok"] += 1
-            elif status == "skipped":
-                sm["quarterly_skipped"] += 1
-            elif "failed" in status:
-                sm["quarterly_failed"] += 1
-            if _is_ima_success(d.get("ima")):
-                sm["ima_ok"] += 1
-            elif _is_ima_failure(d.get("ima")) or status == "ima_failed":
-                sm["ima_failed"] += 1
-    return sm
+    """Compute summary from per-document state (W40-#50: 委托 bulk_common,
+    语义不变 — 严格版本来就是从这里统一的)."""
+    return _common_compute_summary(st)
 
 
 def get_state_summary(st: dict) -> dict:

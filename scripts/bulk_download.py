@@ -58,15 +58,8 @@ TZ_CN = timezone(timedelta(hours=8))
 
 
 def _resolve_ima_script() -> Path:
-    """IMA 同步脚本查找链: 环境变量 → 仓库内 scripts/sync_to_ima.sh →
-    旧 ~/.openclaw 路径。调用时解析 (非模块加载时), 进程内改 env 也生效。"""
-    env = os.environ.get("IMA_SYNC_SCRIPT_PATH")
-    if env:
-        return Path(env)
-    in_repo = PROJECT_ROOT / "scripts" / "sync_to_ima.sh"
-    if in_repo.exists():
-        return in_repo
-    return LEGACY_IMA_SYNC_SCRIPT
+    """IMA 同步脚本查找链 (委托 bulk_common, PROJECT_ROOT 调用时读取)。"""
+    return bulk_common.resolve_ima_script(PROJECT_ROOT)
 
 ANNUAL_MAP = {"CN": "annual_report", "HK": "annual_report", "US": "10k", "US_20F": "20f"}
 QUARTERLY_MAP = {
@@ -129,6 +122,10 @@ from unified_downloader.utils.adr_map import (
     resolve_target,
     is_adr_skipped,
 )
+
+# W40-#50: 三脚本共享工具 (run/compute_summary/upload_ima 统一严格语义)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bulk_common  # noqa: E402
 
 def quarterly_search_market(is_adr_hk, is_20f, mkt_key):
     if is_adr_hk:
@@ -205,43 +202,8 @@ def validate_file(fpath):
     return True
 
 def upload_ima(fpath, kb="年报季度报知识库"):
-    ima_script = _resolve_ima_script()
-    if not ima_script.exists():
-        log.error("    IMA sync script missing: %s (set IMA_SYNC_SCRIPT_PATH or put "
-                  "scripts/sync_to_ima.sh in repo)", ima_script)
-        return False
-    rc, out, err = run(["bash", str(ima_script), "--file", str(fpath),
-                        "--kb-name", kb, "--force"], timeout=300)
-    combined = out + "\n" + err
-    lower = combined.lower()
-
-    # sync_to_ima.sh may exit 0 even when create_media fails; rely on
-    # per-file success/duplicate markers and reject explicit failure summary.
-    success_mark = (
-        "Upload successful" in combined
-        or "已添加到知识库" in combined
-        or re.search(r"✅\s*成功\s*[1-9]", combined) is not None
-    )
-    duplicate_ok = "already exists" in lower or "已存在" in combined
-    failure_mark = (
-        "create_media 失败" in combined
-        or "请求超量" in combined
-        or re.search(r"失败\s*[1-9]", combined) is not None
-    )
-    skipped_mark = (
-        "unsupported" in lower
-        or "不支持" in combined
-        or "Web pages must be added via URL" in combined
-        or "跳过 1" in combined
-        or "skipped 1" in lower
-    )
-    ok = (rc == 0 and (success_mark or duplicate_ok) and not skipped_mark and not failure_mark)
-    if ok:
-        log.info("    IMA: ✓ %s", fpath.name)
-    else:
-        log.error("    IMA: ✗ %s rc=%s stdout=%s stderr=%s",
-                  fpath.name, rc, out[-500:], err[-500:])
-    return ok
+    """委托 bulk_common (完整判定版语义不变)。"""
+    return bulk_common.upload_ima(fpath, kb=kb, project_root=PROJECT_ROOT, logger=log)
 
 def log_failure(code, name, detail):
     p = LOG_DIR / "failures.log"
@@ -346,36 +308,10 @@ def should_mark_quarterly_unavailable(state, year, qlabel, form_type=None):
     return True
 
 def compute_summary(state: dict) -> dict:
-    """从细粒度状态计算汇总"""
-    s = {"annual_ok": 0, "annual_skipped": 0, "annual_failed": 0,
-         "quarterly_ok": 0, "quarterly_skipped": 0, "quarterly_failed": 0,
-         "ima_ok": 0, "ima_failed": 0}
-    for y, d in state.get("annual", {}).items():
-        st = d.get("status", "")
-        if st in ("downloaded", "uploaded"):
-            s["annual_ok"] += 1
-        elif st == "skipped":
-            s["annual_skipped"] += 1
-        elif "failed" in st:
-            s["annual_failed"] += 1
-        if d.get("ima") == "uploaded":
-            s["ima_ok"] += 1
-        elif d.get("ima") == "failed":
-            s["ima_failed"] += 1
-    for y, qs in state.get("quarterly", {}).items():
-        for q, d in qs.items():
-            st = d.get("status", "")
-            if st in ("downloaded", "uploaded"):
-                s["quarterly_ok"] += 1
-            elif st == "skipped":
-                s["quarterly_skipped"] += 1
-            elif "failed" in st:
-                s["quarterly_failed"] += 1
-            if d.get("ima") == "uploaded":
-                s["ima_ok"] += 1
-            elif d.get("ima") == "failed":
-                s["ima_failed"] += 1
-    return s
+    """委托 bulk_common — W40-#50: 统一为 scheduler 严格版语义
+    (downloaded 且 ima 非失败才算 ok; ima 字段的非常规失败值如
+    semantic_upload_rate_limited 也计入 ima_failed)。"""
+    return bulk_common.compute_summary(state)
 
 # ── 主流程 ──
 

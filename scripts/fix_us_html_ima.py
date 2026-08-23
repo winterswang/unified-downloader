@@ -23,12 +23,16 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# W40-#50: 共享工具 (超时隔离 run / 严格 compute_summary / 完整判定
+# upload_ima / IMA 查找链)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bulk_common  # noqa: E402
 STATE_DIR = PROJECT_ROOT / "data" / "bulk_state"
 QUEUE_FILE = PROJECT_ROOT / "data" / "bulk_download_queue.json"
 LOG_DIR = PROJECT_ROOT / "logs"
 FIX_LOG = LOG_DIR / "fix_us_html_ima.log"
-DEFAULT_IMA_SYNC_SCRIPT = Path.home() / ".openclaw" / "workspace" / "skills" / "unified-downloader" / "scripts" / "sync_to_ima.sh"
-IMA_SYNC_SCRIPT = Path(os.environ.get("IMA_SYNC_SCRIPT_PATH", DEFAULT_IMA_SYNC_SCRIPT))
+IMA_SYNC_SCRIPT = bulk_common.resolve_ima_script(PROJECT_ROOT)  # W40-#50: 查找链 (原仅 env→legacy)
 TZ_CN = timezone(timedelta(hours=8))
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,8 +46,8 @@ log = logging.getLogger("fix_us_html_ima")
 
 
 def run(cmd: list[str], timeout: int) -> tuple[int, str, str]:
-    r = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
+    """W40-#50: 委托 bulk_common — 超时不再穿透 (原版直接抛异常)。"""
+    return bulk_common.run(cmd, timeout=timeout, project_root=PROJECT_ROOT)
 
 
 def load_queue_names() -> dict[str, str]:
@@ -54,42 +58,8 @@ def load_queue_names() -> dict[str, str]:
 
 
 def compute_summary(state: dict) -> dict:
-    s = {
-        "annual_ok": 0,
-        "annual_skipped": 0,
-        "annual_failed": 0,
-        "quarterly_ok": 0,
-        "quarterly_skipped": 0,
-        "quarterly_failed": 0,
-        "ima_ok": 0,
-        "ima_failed": 0,
-    }
-    for d in state.get("annual", {}).values():
-        st = d.get("status", "")
-        if st in ("downloaded", "uploaded"):
-            s["annual_ok"] += 1
-        elif st == "skipped":
-            s["annual_skipped"] += 1
-        elif "failed" in st:
-            s["annual_failed"] += 1
-        if d.get("ima") == "uploaded":
-            s["ima_ok"] += 1
-        elif d.get("ima") == "failed":
-            s["ima_failed"] += 1
-    for qs in state.get("quarterly", {}).values():
-        for d in qs.values():
-            st = d.get("status", "")
-            if st in ("downloaded", "uploaded"):
-                s["quarterly_ok"] += 1
-            elif st == "skipped":
-                s["quarterly_skipped"] += 1
-            elif "failed" in st:
-                s["quarterly_failed"] += 1
-            if d.get("ima") == "uploaded":
-                s["ima_ok"] += 1
-            elif d.get("ima") == "failed":
-                s["ima_failed"] += 1
-    return s
+    """W40-#50: 委托 bulk_common 严格版 (downloaded 且 ima 非失败才算 ok)。"""
+    return bulk_common.compute_summary(state)
 
 
 def should_fix(state: dict, year: str, entry: dict) -> bool:
@@ -142,14 +112,9 @@ def download_pdf(code: str, year: str, form_type: str) -> Path | None:
 
 
 def upload_ima(pdf: Path, kb: str = "年报季度报知识库") -> bool:
-    rc, out, err = run(["bash", str(IMA_SYNC_SCRIPT), "--file", str(pdf), "--kb-name", kb, "--force"], timeout=360)
-    combined = out + "\n" + err
-    success_mark = ("✅" in combined or "已添加到知识库" in combined or "Upload successful" in combined)
-    skipped = ("跳过 " in combined or "skipped " in combined.lower()) and not success_mark
-    ok = rc == 0 and not skipped and success_mark
-    if not ok:
-        log.error("IMA upload failed file=%s rc=%s stdout=%s stderr=%s", pdf.name, rc, out[-800:], err[-800:])
-    return ok
+    """W40-#50: 委托 bulk_common 完整判定版 — 原宽松版 "✅ 出现" 会把
+    "✅ 成功 0" 判成功, 且漏检 create_media 失败/请求超量标记。"""
+    return bulk_common.upload_ima(pdf, kb=kb, project_root=PROJECT_ROOT, logger=log)
 
 
 def main() -> int:

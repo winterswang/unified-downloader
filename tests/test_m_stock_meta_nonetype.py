@@ -78,27 +78,45 @@ def test_download_succeeds_without_user_env():
     assert "unsupported operand" not in combined
 
 
-def test_default_user_agent_uses_unknown_when_user_unset():
-    """Direct unit check on the patched expression.
+def test_default_user_agent_uses_unknown_when_user_unset(monkeypatch):
+    """W40-#50 重写: 真实调用 _resolve_sec_user_agent (旧用例把被测
+    表达式复制进断言自证, m_stock 真回归它照样绿)。"""
+    sys.path.insert(0, str(Path(__file__).parent.parent / "unified_downloader"))
+    from adapters.m_stock import _resolve_sec_user_agent
 
-    Mirrors the line in m_stock.py:
+    class _NoUaCfg:
+        sec_user_agent = None
 
-        user = os.environ.get("USER") or "Unknown"
-        sec_ua = f"{user}/contact@example.com Research Tool/1.0"
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
 
-    If a future refactor changes the default user string, this test
-    will fail and force an explicit decision.
-    """
-    env = {k: v for k, v in os.environ.items() if k != "USER"}
-    user = env.get("USER") or "Unknown"
-    assert user == "Unknown", "Expected 'Unknown' fallback when USER unset"
-    # Sanity: the expression must not raise.
-    ua = f"{user}/contact@example.com Research Tool/1.0"
+    ua = _resolve_sec_user_agent(_NoUaCfg())
+
     assert ua == "Unknown/contact@example.com Research Tool/1.0"
 
 
-def test_user_env_present_yields_actual_user():
-    """When USER IS set, the fallback should not mask it."""
-    env = {**os.environ, "USER": "winters"}
-    user = env.get("USER") or "Unknown"
-    assert user == "winters", "USER env should win over 'Unknown' fallback"
+def test_resolve_sec_user_agent_priority(monkeypatch):
+    """三档优先级: config 显式 > SEC_USER_AGENT env > USER 兜底"""
+    sys.path.insert(0, str(Path(__file__).parent.parent / "unified_downloader"))
+    from adapters.m_stock import _resolve_sec_user_agent
+
+    class _CfgUa:
+        sec_user_agent = "Custom Agent/1.0"
+
+    class _NoUaCfg:
+        sec_user_agent = None
+
+    # 1. config 显式配置最高优先
+    assert _resolve_sec_user_agent(_CfgUa()) == "Custom Agent/1.0"
+
+    # 2. SEC_USER_AGENT env 次之
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.setenv("SEC_USER_AGENT", "EnvAgent/2.0")
+    assert _resolve_sec_user_agent(_NoUaCfg()) == "EnvAgent/2.0"
+
+    # 3. USER 兜底构造
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    monkeypatch.setenv("USER", "winters")
+    assert _resolve_sec_user_agent(_NoUaCfg()) == (
+        "winters/contact@example.com Research Tool/1.0"
+    )
