@@ -52,7 +52,15 @@ def load_adr_map(path: Optional[Path] = None) -> Dict[str, Any]:
     if not target.exists():
         logger.warning("adr_map.json not found at %s, returning empty map", target)
         return {}
-    return json.loads(target.read_text(encoding="utf-8"))
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        # W40-#50: 损坏的 adr_map.json 之前直接炸掉所有美股 10-K/10-Q
+        # 下载 (get_annual_form_type 调用无保护); 按缺失处理
+        logger.error(
+            "adr_map.json corrupt at %s (%s), returning empty map", target, e
+        )
+        return {}
 
 
 def _us_key_variants(code: str) -> Tuple[str, str, str]:

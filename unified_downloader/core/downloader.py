@@ -475,6 +475,7 @@ class UnifiedDownloader:
         self,
         tasks: List[Dict[str, Any]],
         max_workers: Optional[int] = None,
+        max_errors: Optional[int] = None,
         on_task_complete: Optional[Callable[[TaskInfo], None]] = None,
         on_task_progress: Optional[
             Callable[[TaskInfo, ProgressCallbackType], None]
@@ -490,6 +491,8 @@ class UnifiedDownloader:
                    - document_type: 文档类型（可选，默认annual_report）
                    - market: 市场类型（可选，自动识别）
             max_workers: 最大并发数
+            max_errors: 最大失败数, 失败数超过后取消未开始的任务
+                        (None 表示不限制)
             on_task_complete: 任务完成回调
             on_task_progress: 任务进度回调
 
@@ -556,6 +559,7 @@ class UnifiedDownloader:
 
             return result
 
+        aborted = False
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(process_task, task) for task in tasks]
 
@@ -577,6 +581,15 @@ class UnifiedDownloader:
                     )
                     failed += 1
 
+                # W40-#50: 实现 CLI 声明的 --errors 语义 ("超过此数将停止")
+                # — 之前该参数解析后从未被引用。取消尚未开始的任务;
+                # 正在跑的任务让其自然完成。
+                if max_errors is not None and failed > max_errors:
+                    aborted = True
+                    for f in futures:
+                        f.cancel()
+                    break
+
         duration_ms = int((time.time() - start_time) * 1000)
 
         return BatchResult(
@@ -585,6 +598,11 @@ class UnifiedDownloader:
             failed=failed,
             results=results,
             duration_ms=duration_ms,
+            metadata=(
+                {"aborted": True, "aborted_reason": f"max_errors={max_errors} exceeded"}
+                if aborted
+                else None
+            ),
         )
 
     def _detect_market(self, code: str) -> Market:

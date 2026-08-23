@@ -135,14 +135,34 @@ class AsyncUnifiedDownloader:
             EventType.DOWNLOAD_START, market, code, year, document_type, True
         )
 
-        result = await adapter.async_download(
-            http_client=self._async_http_client,
-            code=code,
-            year=year,
-            document_type=document_type,
-            on_progress=on_progress,
-            **kwargs,
-        )
+        try:
+            result = await adapter.async_download(
+                http_client=self._async_http_client,
+                code=code,
+                year=year,
+                document_type=document_type,
+                on_progress=on_progress,
+                **kwargs,
+            )
+        except Exception as e:
+            # W40-#50: 之前 eu_stock 等骨架的 NotImplementedError 直接抛给
+            # 调用方 (sync 路径却兜成失败结果), 单发/批量两种表现不一致
+            duration_ms = int((time.time() - start_time) * 1000)
+            breaker.record_failure()
+            self._downloader._log_event(
+                EventType.DOWNLOAD_FAILED,
+                market, code, year, document_type,
+                False,
+                error_code="DOWNLOAD_ERROR",
+                error_message=str(e),
+                duration_ms=duration_ms,
+            )
+            return DownloadResult(
+                success=False,
+                error_code="DOWNLOAD_ERROR",
+                error_message=str(e),
+                duration_ms=duration_ms,
+            )
 
         duration_ms = int((time.time() - start_time) * 1000)
         result.duration_ms = duration_ms

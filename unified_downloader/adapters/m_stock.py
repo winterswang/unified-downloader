@@ -27,6 +27,20 @@ from unified_downloader.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _primary_doc_ext(link: str) -> str:
+    """primary doc 链接 → 保存扩展名。
+
+    W40-#50: 之前 ``link.endswith(".htm")`` 漏判 ``.html`` (差一个 l),
+    EDGAR 上少数 primary doc 以 .html 结尾会被存成 .txt, 后续图片内嵌
+    与 PDF 转换全部跳过; ``" exhibit" in link`` 是死条件 (URL 空格被
+    编码为 %20 永不命中), 改判 ``%20exhibit``。
+    """
+    lower = link.lower()
+    if lower.endswith((".htm", ".html")) or "%20exhibit" in lower:
+        return ".html"
+    return ".txt"
+
+
 class MStockAdapter(BaseStockAdapter):
     """
     美股下载适配器
@@ -388,9 +402,10 @@ class MStockAdapter(BaseStockAdapter):
         - 记录 edgar init / search / sec_api 各阶段耗时
         - 解决“downloader 120s 讴 “unknown error” 问题：能定位是哪一步慢
         """
-        # 应用速率限制
+        # W40-#50: 之前常态路径 (edgar 成功) 也要连等两个限速 key,
+        # 为从未发生的 sec-api 调用白睡一个 interval (默认 5s), 批量下
+        # 显著拖慢; sec-api 的等待移到真正要调它的分支
         self._rate_limiter.wait("edgar_search")
-        self._rate_limiter.wait("sec_api_search")
 
         last_error = None
         _t_search = time.monotonic()
@@ -422,6 +437,7 @@ class MStockAdapter(BaseStockAdapter):
 
         # edgartools失败，回退到sec-api (付费)，带重试
         if self._api_key:
+            self._rate_limiter.wait("sec_api_search")
             for attempt in range(self.MAX_RETRIES):
                 try:
                     return self._search_sec_api(ticker, form_type, year, size)
@@ -1242,9 +1258,7 @@ class MStockAdapter(BaseStockAdapter):
                 pass
 
         # 确定文件扩展名
-        ext = ".txt"
-        if link.endswith(".htm") or " exhibit" in link.lower():
-            ext = ".html"
+        ext = _primary_doc_ext(link)
 
         # 构建保存路径
         file_path = self._build_file_path(
@@ -1501,9 +1515,7 @@ class MStockAdapter(BaseStockAdapter):
             except (ValueError, IndexError):
                 pass
 
-        ext = ".txt"
-        if link.endswith(".htm"):
-            ext = ".html"
+        ext = _primary_doc_ext(link)
 
         file_path = self._build_file_path(
             ticker, file_year, form_type.replace("-", ""), ext

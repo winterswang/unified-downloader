@@ -21,7 +21,9 @@ class CninfoAPI:
     """巨潮资讯API封装"""
 
     # PDF下载基础URL
-    PDF_BASE_URL = "http://static.cninfo.com.cn/finalpage"
+    # W40-#50: 与同文件全文检索 URL 统一 https (混用 http 有被劫持/
+    # 重定向风险)
+    PDF_BASE_URL = "https://static.cninfo.com.cn/finalpage"
 
     # 支持的报告类别
     CATEGORIES = {

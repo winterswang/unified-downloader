@@ -9,8 +9,9 @@ packages = [{include = "unified_downloader"}]
 [tool.poetry.scripts]
 unified-downloader = "unified_downloader.cli:cli"
 
+# W40-#50: MCP server 等代码使用 3.10+ 语法/特性, ^3.9 声明与实际不符
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 requests = ">=2.28"
 aiohttp = ">=3.8"
 pydantic = ">=2.0,<3.0"
