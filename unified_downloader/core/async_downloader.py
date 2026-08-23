@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
 from unified_downloader.models.enums import Market, EventType
@@ -66,19 +67,31 @@ class AsyncUnifiedDownloader:
         if market is None:
             market = self._downloader._detect_market(code)
 
-        cached_path = self._downloader._cache_manager.get(
+        hit = self._downloader._cache_manager.get(
             market.value, code, year, document_type
         )
-        if cached_path:
-            restored_path = self._downloader._restore_semantic_cache_path(
-                market, code, year, document_type, cached_path
-            )
-            return DownloadResult(
-                success=True,
-                file_path=restored_path,
-                cached=True,
-                metadata={"cache_path": cached_path},
-            )
+        if hit:
+            # W40-#49: 与同步路径一致 — 语义路径直接返回; 老条目走还原。
+            # 另补齐 V4: 要 PDF 而缓存是 HTML 时不短路缓存 (sync 已有,
+            # async 之前缺失, 行为分叉)
+            restored_path = hit.path
+            if restored_path == hit.hash_path:
+                restored_path = self._downloader._restore_semantic_cache_path(
+                    market, code, year, document_type, hit.hash_path
+                )
+            wants_pdf = kwargs.get("convert_to_pdf") is True
+            if not (
+                market == Market.M
+                and wants_pdf
+                and Path(restored_path).suffix.lower() in (".html", ".htm")
+            ):
+                return DownloadResult(
+                    success=True,
+                    file_path=restored_path,
+                    cached=True,
+                    metadata={"cache_path": hit.hash_path},
+                )
+            # 显式要 PDF 但缓存是 HTML → 落到直接下载
 
         # 执行下载
         return await self._download_direct(

@@ -285,3 +285,26 @@ unified-downloader/
 ├── pyproject.toml             # Poetry 项目配置
 └── README.md
 ```
+
+## 下载路径与缓存规范（#49）
+
+所有市场的下载文件统一遵循一套语义化路径规范，`DownloadResult.file_path` 永远返回语义路径（不是缓存 hash 路径）：
+
+```
+downloads/{market}/{code_prefix}/{CODE}_{YYYY}_{LABEL}{ext}
+```
+
+- `market`：`a`=A股 / `h`=港股 / `m`=美股 / `e`=EU
+- `code_prefix`：代码前 3 位（A股补零到 6 位后取前 3；港股补零到 5 位后取前 3）
+- `LABEL`：与市场派发一致的文档类型标签（如 `ANNUAL_REPORT` / `INTERIM_REPORT` / `QUARTERLY_REPORT` / `PROSPECTUS`；美股为 SEC form 如 `10K` / `10Q` / `6K` / `20F`）
+- A股扩展名固定 `.PDF`；港股 `.pdf`/`.html` 由原始链接决定；美股 `.html`（`--pdf` 时 `.pdf`）
+
+缓存是双层结构：
+
+- **持久层**：`data/cache/{market}/{code_prefix}/{md5}{ext}`（hash 文件名，SQLite `cache_entries` 表管理 TTL/LRU）
+- **语义视图**：`downloads/` 下的语义路径。缓存命中时优先返回 `cache_entries.semantic_path`（首次下载时记录）；老条目或语义副本被清理时，从 hash 副本按上述命名规则本地还原（**零网络请求**），并懒回填
+
+注意：
+- 路径按**相对形态**存储，请从项目根目录运行
+- `metadata["cache_path"]` 恒为 hash 持久层路径（诊断用）
+- 历史数据库中的旧 hash 路径记录不做本仓库侧迁移（见 issue #49 任务 B4，由下游 morning-brief/服务器处理）

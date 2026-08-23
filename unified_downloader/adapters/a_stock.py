@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import urllib.parse
+from pathlib import Path
 from datetime import date
 from typing import Optional, List, Dict, Any, Callable
 
@@ -293,6 +294,37 @@ class AStockAdapter(BaseStockAdapter):
             checkpoint,
             on_progress,
         )
+
+    # W40-#49: doc_type → 文件名 label, 与 download() 分发一致
+    # (quarterly_q1/q3/quarterly 都是 quarterly_report; 未知类型按年报,
+    # 同 download() 的 else 分支)
+    _SEMANTIC_LABELS = {
+        "annual_report": "ANNUAL_REPORT", "年报": "ANNUAL_REPORT",
+        "年度报告": "ANNUAL_REPORT",
+        "interim_report": "INTERIM_REPORT", "中期报告": "INTERIM_REPORT",
+        "半年报": "INTERIM_REPORT",
+        "quarterly_q1": "QUARTERLY_REPORT", "q1": "QUARTERLY_REPORT",
+        "一季报": "QUARTERLY_REPORT",
+        "quarterly_q3": "QUARTERLY_REPORT", "q3": "QUARTERLY_REPORT",
+        "三季报": "QUARTERLY_REPORT",
+        "quarterly": "QUARTERLY_REPORT", "季度": "QUARTERLY_REPORT",
+        "prospectus": "PROSPECTUS", "招股说明书": "PROSPECTUS",
+        "招股书": "PROSPECTUS", "s1": "PROSPECTUS",
+    }
+
+    def build_semantic_cache_path(
+        self, code: str, year: Optional[int], document_type: str, ext: str
+    ) -> Path:
+        """W40-#49: 复刻 A 股下载命名 — 去 SH/SZ 前缀 + zfill(6),
+        扩展名固定大写 .PDF (A 股公告全部是 PDF)"""
+        symbol = code.strip().upper()
+        if symbol.startswith(("SH", "SZ")):
+            symbol = symbol[2:]
+        symbol = symbol.zfill(6)
+        label = self._SEMANTIC_LABELS.get(
+            str(document_type).lower(), "ANNUAL_REPORT"
+        )
+        return self._build_file_path(symbol, year, label, ".PDF")
 
     def _download_annual_report(
         self,

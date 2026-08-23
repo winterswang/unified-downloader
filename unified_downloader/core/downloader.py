@@ -162,16 +162,20 @@ class UnifiedDownloader:
 
         # 检查缓存
         if use_cache and self.config.download.cache_enabled:
-            cached_path = self._cache_manager.get(
+            hit = self._cache_manager.get(
                 market.value, code, year, document_type
             )
-            if cached_path:
-                # US SEC downloads are cached under MD5 keys.  Returning those
-                # paths directly makes downstream IMA uploads show hash filenames.
-                # Restore a semantic downloads/... filename before reporting a hit.
-                restored_path = self._restore_semantic_cache_path(
-                    market, code, year, document_type, cached_path
-                )
+            if hit:
+                # W40-#49: 新条目缓存层已记住语义路径 → 直接返回, 零还原
+                # 零网络 (此前美股每次命中都调 edgar.Company() 发 SEC 请求
+                # 只为起文件名, A/H 更是直接返回 data/cache hash 乱码路径,
+                # 这就是 morning-brief DB file_path 不统一的根因)。
+                # 老条目 (无 semantic_path) 或语义副本被清理 → 还原兼容层。
+                restored_path = hit.path
+                if restored_path == hit.hash_path:
+                    restored_path = self._restore_semantic_cache_path(
+                        market, code, year, document_type, hit.hash_path
+                    )
 
                 # If the caller explicitly asks for PDF but the cached US artifact
                 # is HTML, do not short-circuit here.  Let the US adapter download
@@ -197,7 +201,7 @@ class UnifiedDownloader:
                         file_size=Path(restored_path).stat().st_size,
                         cached=True,
                         duration_ms=duration_ms,
-                        metadata={"cache_path": cached_path},
+                        metadata={"cache_path": hit.hash_path},
                     )
 
         # 生成任务ID
@@ -410,8 +414,29 @@ class UnifiedDownloader:
         makes uploaded documents unsearchable.
         """
         cached = Path(cached_path)
-        if market != Market.M or not cached.exists():
+        if not cached.exists():
             return cached_path
+
+        if market != Market.M:
+            # W40-#49: A/H 老条目之前直接返回 data/cache/... hash 路径
+            # (DB 路径不统一的直接根因之一)。现在用 adapter 复刻下载命名
+            # 规则本地推导, 无网络请求; EU 等未实现的市场维持原样。
+            adapter = self._adapters.get(market)
+            if adapter is None:
+                return cached_path
+            try:
+                target = adapter.build_semantic_cache_path(
+                    code, year, document_type, cached.suffix
+                )
+            except NotImplementedError:
+                return cached_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if cached.resolve() != target.resolve() and (
+                not target.exists() or target.stat().st_size != cached.stat().st_size
+            ):
+                shutil.copy2(str(cached), str(target))
+            self._backfill_semantic_path(market, code, year, document_type, target)
+            return str(target)
 
         ticker = code.upper()
         doc_label = self._semantic_us_doc_label(document_type)
@@ -443,7 +468,24 @@ class UnifiedDownloader:
             not target.exists() or target.stat().st_size != cached.stat().st_size
         ):
             shutil.copy2(str(cached), str(target))
+        self._backfill_semantic_path(market, code, year, document_type, target)
         return str(target)
+
+    def _backfill_semantic_path(
+        self,
+        market: Market,
+        code: str,
+        year: Optional[int],
+        document_type: str,
+        target: Path,
+    ) -> None:
+        """W40-#49: 还原成功后懒回填 — 下次命中直接走语义路径, 免还原"""
+        try:
+            self._cache_manager.set_semantic_path(
+                market.value, code, year, document_type, str(target)
+            )
+        except Exception as exc:
+            logger.debug("semantic path backfill failed: %s", exc)
 
     @staticmethod
     def _semantic_us_doc_label(document_type: str) -> str:
