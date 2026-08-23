@@ -3,6 +3,7 @@
 import sqlite3
 import hashlib
 import shutil
+from contextlib import closing
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -46,7 +47,7 @@ class CacheManager:
 
     def _init_db(self) -> None:
         """初始化数据库"""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cache_entries (
                     key TEXT PRIMARY KEY,
@@ -91,7 +92,7 @@ class CacheManager:
         """
         key = self._make_key(market, code, year, doc_type)
 
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             row = conn.execute(
                 """
                 SELECT file_path, expires_at FROM cache_entries
@@ -172,7 +173,7 @@ class CacheManager:
         if str(file_path) != str(cached_path):
             shutil.copy2(str(file_path), str(cached_path))
 
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO cache_entries
@@ -202,7 +203,7 @@ class CacheManager:
         except Exception:
             pass
 
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
 
     def _maybe_cleanup(self) -> None:
@@ -211,10 +212,28 @@ class CacheManager:
 
         if total_size > self._max_size_bytes:
             self.clear(older_than_days=7)
+            # W40-#50 P1: 之前唯一手段是删 7 天前的条目 — 集中批量拉取时
+            # (一天内写超 max_size) 所有条目 created_at 都是今天, 一个都
+            # 删不掉, 缓存无限增长。回退按 last_access 最久未用淘汰 (LRU)
+            # 直到回到限额内。
+            while self.get_size() > self._max_size_bytes:
+                with closing(
+                    sqlite3.connect(str(self._db_path))
+                ) as conn, conn:
+                    victim = conn.execute(
+                        """
+                        SELECT key, file_path FROM cache_entries
+                        ORDER BY (last_access IS NULL) DESC, last_access ASC
+                        LIMIT 1
+                    """
+                    ).fetchone()
+                if not victim:
+                    break
+                self._delete_entry(victim[0], victim[1])
 
     def get_size(self) -> int:
         """获取缓存总大小（从SQLite聚合，O(1)）"""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             try:
                 result = conn.execute(
                     "SELECT COALESCE(SUM(size), 0) FROM cache_entries"
@@ -247,7 +266,7 @@ class CacheManager:
         """
         count = 0
 
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             if older_than_days is None:
                 # 清理所有缓存
                 rows = conn.execute(
@@ -282,7 +301,7 @@ class CacheManager:
 
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             total_entries = conn.execute(
                 "SELECT COUNT(*) FROM cache_entries"
             ).fetchone()[0]

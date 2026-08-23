@@ -1,5 +1,6 @@
 """HTTP客户端封装"""
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -17,6 +18,29 @@ from unified_downloader.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_retry_after(value: Optional[str], default: int = 60) -> int:
+    """解析 Retry-After 头。W40-#50 P1: 之前裸 int() 遇 HTTP-date 格式
+    (如 'Wed, 21 Oct 2015 07:28:00 GMT') 抛 ValueError 落入通用异常分支,
+    退避节奏完全丢失; 非法/缺失值统一回退 default 秒。"""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _md5_of_file(path: Path) -> str:
+    """流式计算整个文件的 MD5。W40-#50 P1: 断点续传 ('ab' 模式) 时增量
+    哈希只覆盖新到字节, 与全文件 expected_md5 永不相等 → 校验必失败并
+    把整个完整文件删掉; 下载完成后对磁盘全文件统一校验。"""
+    md5 = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            md5.update(chunk)
+    return md5.hexdigest()
 
 
 class HTTPClient:
@@ -94,16 +118,19 @@ class HTTPClient:
                 response = self.session.request(method, url, **kwargs)
 
                 if response.status_code == 429:
-                    # Rate limit - wait and retry
-                    retry_after = int(response.headers.get("Retry-After", 60))
+                    # W40-#50 P1: 末次尝试不再先白睡再抛错; Retry-After
+                    # 兼容 HTTP-date / 非法值 (回退 60s)
+                    if attempt >= self.max_retries - 1:
+                        raise RateLimitError(f"请求过于频繁 (429): {url}")
+                    retry_after = _parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
                     wait_time = min(retry_after, self.max_backoff)
                     logger.warning(
                         f"Rate limited (429), waiting {wait_time}s before retry..."
                     )
                     time.sleep(wait_time)
-                    if attempt < self.max_retries - 1:
-                        continue
-                    raise RateLimitError(f"请求过于频繁 (429): {url}")
+                    continue
 
                 if response.status_code == 404:
                     raise FileIntegrityError(f"资源不存在 (404): {url}")
@@ -223,7 +250,10 @@ class HTTPClient:
                             }
                         )
 
-        md5_result = md5_hash.hexdigest()
+        # W40-#50 P1: 续传时增量 md5 只覆盖新到字节, 统一改为对磁盘上的
+        # 完整文件做一次流式校验 (否则 expected_md5 校验 100% 失败并删掉
+        # 整个完整文件)
+        md5_result = _md5_of_file(file_path)
 
         # 校验MD5
         if expected_md5 and md5_result != expected_md5:
@@ -323,7 +353,15 @@ class AsyncHTTPClient:
             try:
                 async with session.request(method, url, **kwargs) as response:
                     if response.status == 429:
-                        raise RateLimitError(f"请求过于频繁 (429): {url}")
+                        # W40-#50 P1: 与同步版对齐 — 等待后重试, 而不是
+                        # 第一次 429 就抛错 (异步客户端之前完全不重试限流)
+                        if attempt >= self.max_retries - 1:
+                            raise RateLimitError(f"请求过于频繁 (429): {url}")
+                        retry_after = _parse_retry_after(
+                            response.headers.get("Retry-After")
+                        )
+                        await self._sleep(min(retry_after, self.max_backoff))
+                        continue
 
                     if response.status == 404:
                         raise FileIntegrityError(f"资源不存在 (404): {url}")
@@ -339,7 +377,11 @@ class AsyncHTTPClient:
                         "content_type": response.content_type,
                     }
 
-            except aiohttp.ClientTimeout:
+            except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
+                # W40-#50 P1: 之前写的是 except aiohttp.ClientTimeout —
+                # ClientTimeout 是超时*配置*类不是异常类, 任何异常传播到
+                # 这里都会 TypeError ("catching classes that do not inherit
+                # from BaseException") 掩盖原始异常
                 last_exception = DownloadTimeoutError(f"请求超时: {url}")
                 if attempt < self.max_retries - 1:
                     await self._sleep(
@@ -380,8 +422,6 @@ class AsyncHTTPClient:
 
     async def _sleep(self, seconds: float):
         """异步睡眠"""
-        import asyncio
-
         await asyncio.sleep(seconds)
 
     async def download_file(
@@ -456,7 +496,9 @@ class AsyncHTTPClient:
                                 }
                             )
 
-            md5_result = md5_hash.hexdigest()
+            # W40-#50 P1: 同步版同样的问题 — 续传增量哈希 ≠ 全文件哈希,
+            # 下载完成后对磁盘完整文件统一校验
+            md5_result = _md5_of_file(file_path)
 
             if expected_md5 and md5_result != expected_md5:
                 file_path.unlink(missing_ok=True)

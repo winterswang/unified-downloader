@@ -1,12 +1,16 @@
 """断点续传管理"""
 
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
 
 from unified_downloader.exceptions import CheckpointError
+
+logger = logging.getLogger(__name__)
 
 # Platform-compatible file locking
 if sys.platform == "win32":
@@ -86,10 +90,16 @@ class CheckpointManager:
         }
 
         try:
-            with open(checkpoint_path, "w", encoding="utf-8") as f:
+            # W40-#50 P1: tmp+rename 原子写 — 之前 open("w") 在拿 flock 前
+            # 就截断目标文件且 json.dump 直写, 写一半崩溃留下半截 JSON,
+            # 之后 get() 每次都抛 CheckpointError 毒化该 task_id 的全部
+            # 后续下载, 直到人工删文件
+            tmp_path = checkpoint_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 self._lock_file(f)
                 json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
                 self._unlock_file(f)
+            os.replace(tmp_path, checkpoint_path)
         except Exception as e:
             raise CheckpointError(f"保存断点失败: {e}")
 
@@ -114,6 +124,17 @@ class CheckpointManager:
                 data = json.load(f)
                 self._unlock_file(f)
                 return data
+        except json.JSONDecodeError as e:
+            # W40-#50 P1: 损坏 (截断) 的断点文件不再抛 CheckpointError 毒化
+            # 后续下载 — 移除坏文件并当作无断点, 从头下载
+            logger.warning(
+                f"Corrupted checkpoint {checkpoint_path} removed, restarting fresh: {e}"
+            )
+            try:
+                checkpoint_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
         except Exception as e:
             raise CheckpointError(f"读取断点失败: {e}")
 

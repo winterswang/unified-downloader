@@ -1535,7 +1535,10 @@ class MStockAdapter(BaseStockAdapter):
                 and downloaded_path.suffix.lower() in (".html", ".htm")
             ):
                 try:
-                    pdf_path = HTMLToPDFConverter.convert(
+                    # W40-#50 P1: weasyprint 是重 CPU 同步调用, 之前直接在
+                    # 协程里跑会冻结整个事件循环 (其余并发下载全部停摆)
+                    pdf_path = await asyncio.to_thread(
+                        HTMLToPDFConverter.convert,
                         downloaded_path,
                         keep_original=self._keep_original_html,
                     )
@@ -1554,7 +1557,10 @@ class MStockAdapter(BaseStockAdapter):
                 and downloaded_path.suffix.lower() == ".pdf"
             ):
                 try:
-                    translated_path = PDFTranslator.translate(
+                    # W40-#50 P1: 翻译内部是 subprocess.run(timeout=1800) 的
+                    # 同步阻塞调用, 之前直接在协程里跑最长冻结事件循环 30 分钟
+                    translated_path = await asyncio.to_thread(
+                        PDFTranslator.translate,
                         downloaded_path,
                         api_key=self._translate_api_key,
                         model=self._translate_model,
