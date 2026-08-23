@@ -39,6 +39,8 @@ class BatchResult:
     failed: int
     results: List[DownloadResult] = field(default_factory=list)
     duration_ms: Optional[int] = None
+    # W40-#50: 批量提前中止时携带原因 (如 max_errors 超限)
+    metadata: Optional[Dict[str, Any]] = None
 
     @property
     def success_rate(self) -> float:

@@ -316,7 +316,10 @@ def download_batch(cli_ctx, file, output, workers, errors, verbose):
             click.echo(f"  ... 还有 {len(tasks) - 10} 个任务")
 
     # 执行批量下载
-    result = downloader.batch_download(tasks, max_workers=workers)
+    # W40-#50: --errors 之前解析后从未被引用 ("超过此数将停止"是空话)
+    result = downloader.batch_download(
+        tasks, max_workers=workers, max_errors=errors
+    )
 
     click.echo()
     click.echo(click.style("批量下载完成:", bold=True))
@@ -326,6 +329,13 @@ def download_batch(cli_ctx, file, output, workers, errors, verbose):
         click.style(f"  失败:   {result.failed}", fg="red" if result.failed else None)
     )
     click.echo(f"  成功率: {result.success_rate * 100:.1f}%")
+    if result.metadata and result.metadata.get("aborted"):
+        click.echo(
+            click.style(
+                f"  ⚠ 已中止: 失败数超过 --errors={errors}, 部分任务未执行",
+                fg="yellow",
+            )
+        )
 
     if result.failed > 0:
         sys.exit(1)
@@ -549,6 +559,11 @@ def file_list(cli_ctx, market, type, limit, format):
     if not files:
         click.echo("暂无下载文件")
         return
+
+    # W40-#50: --type 之前解析后从未被引用; 按文件名中的类型关键词过滤
+    if type:
+        kw = type.lower()
+        files = [f for f in files if kw in f["name"].lower()]
 
     # 按修改时间排序
     files.sort(key=lambda x: x["modified"], reverse=True)

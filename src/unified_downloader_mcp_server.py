@@ -65,7 +65,7 @@ async def list_tools() -> list[Tool]:
                     "year": {"type": "integer", "description": "年份，如 2024"},
                     "market": {
                         "type": "string",
-                        "enum": ["a", "h", "m"],
+                        "enum": ["a", "h", "m", "e"],
                         "description": "市场: a=A股, h=港股, m=美股",
                     },
                     "document_type": {
@@ -88,7 +88,7 @@ async def list_tools() -> list[Tool]:
                     "year": {"type": "integer", "description": "年份"},
                     "market": {
                         "type": "string",
-                        "enum": ["a", "h", "m"],
+                        "enum": ["a", "h", "m", "e"],
                         "description": "市场",
                     },
                     "document_type": {
@@ -114,7 +114,7 @@ async def list_tools() -> list[Tool]:
                     "code": {"type": "string", "description": "股票代码"},
                     "market": {
                         "type": "string",
-                        "enum": ["a", "h", "m"],
+                        "enum": ["a", "h", "m", "e"],
                         "description": "市场",
                     },
                     "document_type": {
@@ -142,7 +142,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "market": {
                         "type": "string",
-                        "enum": ["a", "h", "m"],
+                        "enum": ["a", "h", "m", "e"],
                         "default": "a",
                         "description": "市场",
                     },
@@ -169,7 +169,11 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             market = arguments.get("market", "a")
             doc_type = arguments.get("document_type", "annual_report")
 
-            result = downloader.download(
+            # W40-#50: 同步下载 (真实网络+磁盘, 分钟级) 移出事件循环,
+            # 之前直接在 async handler 里调用会冻结 stdio server, 客户端
+            # 极易判超时
+            result = await asyncio.to_thread(
+                downloader.download,
                 code=code,
                 year=year,
                 document_type=doc_type,
@@ -238,7 +242,9 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             else:
                 adapter = MStockAdapter(downloader._http_client, [])
 
-            results = adapter.search(code, year, doc_type)
+            results = await asyncio.to_thread(
+                adapter.search, code, year, doc_type
+            )
 
             return CallToolResult(
                 content=[
@@ -283,7 +289,9 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             else:
                 adapter = MStockAdapter(downloader._http_client, [])
 
-            years = adapter.get_available_years(code, doc_type)
+            years = await asyncio.to_thread(
+                adapter.get_available_years, code, doc_type
+            )
 
             return CallToolResult(
                 content=[
@@ -304,14 +312,14 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             )
 
         elif name == "get_download_status":
-            cache_dir = Path("data/cache")
+            cache_dir = PROJECT_ROOT / "data" / "cache"
             cache_size = (
                 sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
                 if cache_dir.exists()
                 else 0
             )
 
-            downloads_dir = Path("downloads")
+            downloads_dir = PROJECT_ROOT / "downloads"
             download_count = (
                 len(list(downloads_dir.rglob("*"))) if downloads_dir.exists() else 0
             )
@@ -353,7 +361,8 @@ async def call_tool(name: str, arguments: Any) -> CallToolResult:
             }
             config = demo_configs.get(market, demo_configs["a"])
 
-            result = downloader.download(
+            result = await asyncio.to_thread(
+                downloader.download,
                 code=config["code"],
                 year=config["year"],
                 document_type=config["type"],
