@@ -69,6 +69,24 @@ class BaseStockAdapter(ABC):
                 return ds
         return None
 
+    def build_semantic_cache_path(
+        self,
+        code: str,
+        year: Optional[int],
+        document_type: str,
+        ext: str,
+    ) -> Path:
+        """语义缓存路径推导 (W40-#49).
+
+        缓存老条目 (无 semantic_path) 或 downloads/ 语义副本被清理时,
+        用与首次下载 _build_file_path 完全相同的 code 规范化和 doc_type
+        label 派发推导目标路径, 从 hash 副本还原。各市场必须覆写并复刻
+        自己的派发逻辑 (直接抄通用规则会错 code 补零/label 映射)。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 未实现 build_semantic_cache_path"
+        )
+
     def _build_file_path(
         self,
         code: str,

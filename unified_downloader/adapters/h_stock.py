@@ -6,6 +6,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta
 from typing import Optional, List, Dict, Any, Callable
+from pathlib import Path
 
 
 from unified_downloader.adapters.base import BaseStockAdapter
@@ -253,6 +254,27 @@ class HStockAdapter(BaseStockAdapter):
             return stock_info["id"]
 
         return None
+
+    # W40-#49: doc_type → 文件名 label, 与 download() 分发一致
+    _SEMANTIC_LABELS = {
+        "annual_report": "ANNUAL_REPORT", "年报": "ANNUAL_REPORT",
+        "interim_report": "INTERIM_REPORT", "中期报告": "INTERIM_REPORT",
+        "半年报": "INTERIM_REPORT",
+        "quarterly": "QUARTERLY_REPORT", "季度": "QUARTERLY_REPORT",
+        "prospectus": "PROSPECTUS", "招股说明书": "PROSPECTUS",
+        "招股书": "PROSPECTUS", "s1": "PROSPECTUS",
+    }
+
+    def build_semantic_cache_path(
+        self, code: str, year: Optional[int], document_type: str, ext: str
+    ) -> Path:
+        """W40-#49: 复刻港股下载命名 — upper + zfill(5), 扩展名用缓存
+        文件后缀 (.pdf/.html 由原始链接决定)"""
+        stock_code = code.upper().zfill(5)
+        label = self._SEMANTIC_LABELS.get(
+            str(document_type).lower(), "ANNUAL_REPORT"
+        )
+        return self._build_file_path(stock_code, year, label, ext)
 
     def _download_annual_report(
         self,

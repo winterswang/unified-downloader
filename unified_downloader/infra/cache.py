@@ -24,6 +24,27 @@ class CacheEntry:
     md5: Optional[str] = None
 
 
+@dataclass
+class CacheHit:
+    """缓存命中结果 (W40-#49).
+
+    hash_path: 缓存持久层路径 data/cache/<market>/<prefix>/<md5>.<ext>
+    semantic_path: 首次下载时的语义路径 (downloads/...), 老条目为 None;
+        语义副本 (downloads/ 下可见文件) 被清理时也置 None, 由调用方从
+        hash 副本还原 — 删条目只看 hash 副本是否健在。
+    """
+
+    hash_path: str
+    semantic_path: Optional[str] = None
+
+    @property
+    def path(self) -> str:
+        """优先语义路径; 语义副本缺失时回 hash 路径 (调用方需还原)"""
+        if self.semantic_path and Path(self.semantic_path).exists():
+            return self.semantic_path
+        return self.hash_path
+
+
 class CacheManager:
     """
     本地缓存管理器
@@ -52,6 +73,7 @@ class CacheManager:
                 CREATE TABLE IF NOT EXISTS cache_entries (
                     key TEXT PRIMARY KEY,
                     file_path TEXT NOT NULL,
+                    semantic_path TEXT,
                     size INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -60,6 +82,18 @@ class CacheManager:
                     last_access TEXT
                 )
             """)
+            # W40-#49: 老库迁移 — 缺列才 ALTER (并发进程同时升级会撞
+            # duplicate column, 包 OperationalError)
+            cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(cache_entries)")
+            }
+            if "semantic_path" not in cols:
+                try:
+                    conn.execute(
+                        "ALTER TABLE cache_entries ADD COLUMN semantic_path TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_expires_at ON cache_entries(expires_at)
             """)
@@ -88,14 +122,14 @@ class CacheManager:
             doc_type: 文档类型
 
         Returns:
-            缓存文件路径，如果不存在或已过期返回None
+            CacheHit (hash_path + semantic_path)，不存在/过期返回 None
         """
         key = self._make_key(market, code, year, doc_type)
 
         with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             row = conn.execute(
                 """
-                SELECT file_path, expires_at FROM cache_entries
+                SELECT file_path, semantic_path, expires_at FROM cache_entries
                 WHERE key = ?
             """,
                 (key,),
@@ -104,12 +138,12 @@ class CacheManager:
             if not row:
                 return None
 
-            file_path = row[0]
-            expires_at = datetime.fromisoformat(row[1])
+            hash_path, semantic_path, expires_at = row[0], row[1], row[2]
+            expires_at = datetime.fromisoformat(expires_at)
 
             # 检查是否过期
             if datetime.now() > expires_at:
-                self._delete_entry(key, file_path)
+                self._delete_entry(key, hash_path)
                 return None
 
             # 更新访问记录
@@ -122,13 +156,16 @@ class CacheManager:
                 (datetime.now().isoformat(), key),
             )
 
-            # 返回文件路径
-            if Path(file_path).exists():
-                return file_path
+            # W40-#49: 删条目只看 hash 副本 (缓存的持久层); downloads/
+            # 语义副本被人工清理不算缓存失效, 走还原重建即可
+            if not Path(hash_path).exists():
+                self._delete_entry(key, hash_path)
+                return None
 
-            # 文件不存在，删除记录
-            self._delete_entry(key, file_path)
-            return None
+            if semantic_path and not Path(semantic_path).exists():
+                semantic_path = None  # 语义副本丢了 → 调用方还原
+
+            return CacheHit(hash_path=hash_path, semantic_path=semantic_path)
 
     def put(
         self,
@@ -173,12 +210,33 @@ class CacheManager:
         if str(file_path) != str(cached_path):
             shutil.copy2(str(file_path), str(cached_path))
 
+        # W40-#49: 记住语义路径, 命中时直接返回 (消灭"还原"常态)。
+        # 入参本身是缓存路径时 (resolve 前缀归属判断, 而非字符串相等)
+        # 存 NULL 且保留旧值 — 不把 hash 路径误存成语义路径
+        try:
+            is_inside_cache = Path(file_path).resolve().is_relative_to(
+                self._cache_dir.resolve()
+            )
+        except (OSError, ValueError):
+            is_inside_cache = False
+        semantic_to_store = None if is_inside_cache else str(file_path)
+
         with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO cache_entries
-                (key, file_path, size, created_at, expires_at, md5, last_access)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO cache_entries
+                (key, file_path, size, created_at, expires_at, md5,
+                 last_access, semantic_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    file_path=excluded.file_path,
+                    size=excluded.size,
+                    created_at=excluded.created_at,
+                    expires_at=excluded.expires_at,
+                    md5=excluded.md5,
+                    last_access=excluded.last_access,
+                    semantic_path=COALESCE(excluded.semantic_path,
+                                           cache_entries.semantic_path)
             """,
                 (
                     key,
@@ -188,6 +246,7 @@ class CacheManager:
                     expires_at.isoformat(),
                     md5,
                     now.isoformat(),
+                    semantic_to_store,
                 ),
             )
 
@@ -195,6 +254,22 @@ class CacheManager:
         self._maybe_cleanup()
 
         return key
+
+    def set_semantic_path(
+        self,
+        market: str,
+        code: str,
+        year: Optional[int],
+        doc_type: str,
+        semantic_path: str,
+    ) -> None:
+        """W40-#49: 懒回填语义路径 — 还原成功后调用, 下次命中免还原"""
+        key = self._make_key(market, code, year, doc_type)
+        with closing(sqlite3.connect(str(self._db_path))) as conn, conn:
+            conn.execute(
+                "UPDATE cache_entries SET semantic_path = ? WHERE key = ?",
+                (semantic_path, key),
+            )
 
     def _delete_entry(self, key: str, file_path: str) -> None:
         """删除缓存条目"""
