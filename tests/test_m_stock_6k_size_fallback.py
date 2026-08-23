@@ -12,7 +12,7 @@ Regression: 2026-08-13 NVO — 诺和诺德 6-K 是"单文档结构"（正文=pr
 """
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,28 +59,56 @@ class TestSixKSizeLargestFallback:
         assert picked is None  # 无 exhibit 可打分
 
     def test_fallback_selects_largest_size(self, adapter):
-        """
-        回退应选 size 最大的 filing（完整财报 2.78MB），
-        而非 filings[0]（回购公告 167KB）。
+        """W40-#50 重写: 真实走 _download_form 的 size 回退路径 (旧用例在
+        测试里直接调内置 max() 自证, adapter 一行代码都没执行)。
+
+        回退应把 size 最大的 filing (完整财报 2.78MB) 传给
+        _download_filing, 而非 filings[0] (回购公告 167KB)。
         """
         filings = [
             _mk_filing("0001171843-26-005376", 167508, "2026-08-10"),  # 回购公告
             _mk_filing("0000353278-26-000023", 2784789, "2026-08-04"),  # 完整财报
             _mk_filing("0001171843-26-005184", 167154, "2026-08-04"),  # 摘要
         ]
-        best = max(filings, key=lambda f: int(f.get("size") or 0))
-        assert best["accessionNo"] == "0000353278-26-000023"
-        assert best["size"] == 2784789
+        captured = {}
+        ok_result = MagicMock()
+        ok_result.success = True
+
+        with patch.object(adapter, "_search_filings", return_value=filings), \
+             patch.object(adapter, "_download_filing") as mock_dl:
+            # _download_filing 以 6 个位置参数调用 (filing, ticker, form,
+            # year, on_progress, checkpoint) — 侧签名要吃下其余位置参数
+            mock_dl.side_effect = (
+                lambda filing, *args, **kw:
+                    captured.update(filing=filing) or ok_result
+            )
+            adapter._download_form("NVO", "6-K", 2026, None, None)
+
+        assert captured["filing"]["accessionNo"] == "0000353278-26-000023"
+        assert captured["filing"]["size"] == 2784789
 
     def test_size_zero_falls_back_to_first(self, adapter):
-        """所有 size=0 时，回退仍取 filings[0]（不 crash）"""
+        """所有 size=0 时回退保持 filings[0]（不 crash）— 真实路径验证"""
         filings = [
             _mk_filing("A", 0),
             _mk_filing("B", 0),
             _mk_filing("C", 0),
         ]
-        best = max(filings, key=lambda f: int(f.get("size") or 0))
-        assert best["accessionNo"] == "A"
+        captured = {}
+        ok_result = MagicMock()
+        ok_result.success = True
+
+        with patch.object(adapter, "_search_filings", return_value=filings), \
+             patch.object(adapter, "_download_filing") as mock_dl:
+            # _download_filing 以 6 个位置参数调用 (filing, ticker, form,
+            # year, on_progress, checkpoint) — 侧签名要吃下其余位置参数
+            mock_dl.side_effect = (
+                lambda filing, *args, **kw:
+                    captured.update(filing=filing) or ok_result
+            )
+            adapter._download_form("NVO", "6-K", 2026, None, None)
+
+        assert captured["filing"]["accessionNo"] == "A"
 
     def test_large_exhibit_still_preferred(self, adapter):
         """有财报 exhibit 的仍优先于 size 回退（关键词打分优先）"""

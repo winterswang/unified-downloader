@@ -112,17 +112,28 @@ class PDFTranslator:
         # 构建 babeldoc 命令
         # 使用 wrapper 脚本剥离推理模型输出中的 </think> 思考标签
         wrapper_path = Path(__file__).parent / "_babeldoc_wrapper.py"
-        if wrapper_path.exists():
+        use_wrapper = wrapper_path.exists()
+        if use_wrapper:
             babeldoc_cmd = [sys.executable, str(wrapper_path)]
         else:
             babeldoc_cmd = ["babeldoc"]
+            logger.warning(
+                "babeldoc wrapper 不存在, API key 将以命令行参数传给子进程 "
+                "(共享机器 ps 可见); 建议保留 _babeldoc_wrapper.py"
+            )
 
         cmd = babeldoc_cmd + [
             "--files", str(pdf_path),
             "--openai",
             "--openai-model", model,
             "--openai-base-url", base_url,
-            "--openai-api-key", api_key,
+        ]
+        if not use_wrapper:
+            # W40-#50: wrapper 存在时 key 经环境变量注入 (wrapper 的
+            # __main__ 里补进 sys.argv, 进程已 exec, ps 不可见);
+            # 仅 fallback 裸 babeldoc 时才进 argv
+            cmd += ["--openai-api-key", api_key]
+        cmd += [
             "--lang-in", "en",
             "--lang-out", target_lang,
             "--output", str(output_dir),
@@ -140,12 +151,20 @@ class PDFTranslator:
         logger.info(f"开始翻译: {pdf_path.name} (en→{target_lang})")
         translate_start_time = time.time()
 
+        run_env = None
+        if use_wrapper:
+            run_env = {
+                **os.environ,
+                "UNIFIED_DOWNLOADER_TRANSLATE_KEY": api_key,
+            }
+
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=1800,  # 30分钟超时
+                env=run_env,
             )
 
             if result.returncode != 0:
