@@ -27,6 +27,37 @@ from unified_downloader.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _report_period_target_end(report_period):
+    """report_period ('2026Q2'/'2026H1'/'2026FY') → 目标报告期结束日.
+
+    W40-#50: 之前 H1/H2 半年报按 Q1/Q2 映射 month_end (H1→3-31, H2→6-30),
+    窗口错一个季度 — RACE 等公司 7 月底发布的中报完全落在窗口外;
+    H3/H4 无意义, 返回 None.
+    """
+    if not report_period:
+        return None
+    try:
+        period = str(report_period).upper()  # e.g. 2026Q2 / 2026FY / 2026H1
+        m = re.match(r"(\d{4})(?:([QH])([1-4])|FY)?$", period)
+        if not m:
+            return None
+        y = int(m.group(1))
+        kind, idx = m.group(2), m.group(3)
+        if not idx:
+            return datetime.date(y, 12, 31)  # FY 无明确季度 → 12-31
+        if kind == "H":
+            if idx not in ("1", "2"):
+                return None
+            month_end = 6 if idx == "1" else 12
+        else:
+            month_end = {"1": 3, "2": 6, "3": 9, "4": 12}[idx]
+        # off-by-1 修复 (PR #48 review 8-14): 不能硬编码 day=30
+        last_day = calendar.monthrange(y, month_end)[1]
+        return datetime.date(y, month_end, last_day)
+    except Exception:
+        return None
+
+
 def _primary_doc_ext(link: str) -> str:
     """primary doc 链接 → 保存扩展名。
 
@@ -229,6 +260,7 @@ class MStockAdapter(BaseStockAdapter):
         form_type: str,
         year: Optional[int],
         size: int = 10,
+        include_next_year: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         使用edgartools搜索SEC filings
@@ -259,7 +291,20 @@ class MStockAdapter(BaseStockAdapter):
                 if year:
                     try:
                         filing_year = filing.filing_date.year
-                        if filing_year != year:
+                        # W40-#50: Q4/FY 财报的发布窗口在次年 1-3 月,
+                        # 之前按日历年过滤把这些 filing 提前丢掉 →
+                        # _pick_earnings_6k 的窗口对 Q4 永远空转。
+                        # 真实数据验证 (TSM 2024Q4): filings 新→旧返回且
+                        # size 截断, 只放宽年份会让次年后半年淹没结果 —
+                        # 上界收到次年 6-30, 恰好覆盖发布窗口
+                        allowed = {year, year + 1} if include_next_year else {year}
+                        if filing_year not in allowed:
+                            continue
+                        if (
+                            include_next_year
+                            and filing_year == year + 1
+                            and filing.filing_date.month > 6
+                        ):
                             continue
                     except (ValueError, IndexError):
                         pass
@@ -334,6 +379,7 @@ class MStockAdapter(BaseStockAdapter):
         form_type: str,
         year: Optional[int],
         size: int = 10,
+        include_next_year: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         使用sec-api搜索SEC filings
@@ -356,7 +402,12 @@ class MStockAdapter(BaseStockAdapter):
             parts.append(f'formType:"{form_type}"')
         if year:
             date_from = f"{year}-01-01"
-            date_to = f"{year}-12-31"
+            # W40-#50: Q4/FY 窗口跨年 — 扩到次年但上界收 6-30 (与新→旧
+            # 返回 + size 截断的 edgar 行为对齐, 防次年后半年淹没窗口)
+            if include_next_year:
+                date_to = f"{year + 1}-06-30"
+            else:
+                date_to = f"{year}-12-31"
             parts.append(f"filedAt:[{date_from} TO {date_to}]")
 
         query = {"query_string": {"query": " AND ".join(parts)}}
@@ -392,6 +443,7 @@ class MStockAdapter(BaseStockAdapter):
         form_type: str,
         year: Optional[int],
         size: int = 10,
+        include_next_year: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         搜索SEC filings (优先edgartools，失败则sec-api)
@@ -418,7 +470,10 @@ class MStockAdapter(BaseStockAdapter):
                 _dt_init = time.monotonic() - _t_init
                 if init_ok:
                     _t_edgar = time.monotonic()
-                    results = self._search_edgar(ticker, form_type, year, size)
+                    results = self._search_edgar(
+                        ticker, form_type, year, size,
+                        include_next_year=include_next_year,
+                    )
                     _dt_edgar = time.monotonic() - _t_edgar
                     logger.info(
                         f"[m_stock timing] search edgar ok: ticker={ticker} form={form_type} "
@@ -440,7 +495,10 @@ class MStockAdapter(BaseStockAdapter):
             self._rate_limiter.wait("sec_api_search")
             for attempt in range(self.MAX_RETRIES):
                 try:
-                    return self._search_sec_api(ticker, form_type, year, size)
+                    return self._search_sec_api(
+                        ticker, form_type, year, size,
+                        include_next_year=include_next_year,
+                    )
                 except Exception as e:
                     last_error = e
                     logger.warning(
@@ -511,7 +569,19 @@ class MStockAdapter(BaseStockAdapter):
             # (如 RACE 7-31 fnvbb310726prex.htm 3KB), 而非 Q2 财报 (7-30 interim report
             # 209KB 含 revenue/EBITDA). 所以对 6-K 多取几条, 选 exhibit 含财报关键词的.
             size = 10 if form_type == "6-K" else 1
-            filings = self._search_filings(ticker, form_type, year, size=size)
+            # W40-#50: Q4/FY/H2 的财报窗口落在次年 1~3 月 — 搜索层要允许
+            # 次年 filing, 否则窗口逻辑永远空转、回退 size 启发式选错文档
+            _target_end = _report_period_target_end(report_period)
+            include_next_year = bool(
+                form_type == "6-K"
+                and year is not None
+                and _target_end is not None
+                and _target_end.month == 12
+            )
+            filings = self._search_filings(
+                ticker, form_type, year, size=size,
+                include_next_year=include_next_year,
+            )
 
             if not filings:
                 return _try_ir_fallback()
@@ -601,29 +671,14 @@ class MStockAdapter(BaseStockAdapter):
         2. 无 report_period 或窗口无命中 → 回退旧逻辑 (打分 → None).
         """
         # 目标季度窗口 (季度结束后第 N~M 天发布财报)
-        QUARTER_EARLY_DAYS = 25   # 财报最早可能在季度结束后 ~25 天发布
+        # W40-#50 真实数据验证 (TSM): Q4 财报最早 ~16 天就发布 (次年 1 月
+        # 中旬), 25 天会漏; 14 天与相邻季度窗口 (Q3 止 12-24) 仍无重叠
+        QUARTER_EARLY_DAYS = 14
         QUARTER_LATE_DAYS = 85    # 最晚在 ~85 天内 (跨季末但未到下一季末)
 
-        # 解析 report_period → 目标季度结束日
-        target_end: Optional[datetime.date] = None
-        if report_period:
-            try:
-                period = report_period.upper()  # e.g. 2026Q2 / 2026FY / 2026H1
-                m = re.match(r"(\d{4})(?:[QH]([1-4]))?", period)
-                if m:
-                    y = int(m.group(1))
-                    q = m.group(2)
-                    if q:
-                        month_end = {"1": 3, "2": 6, "3": 9, "4": 12}[q]
-                        # off-by-1 修复 (PR #48 review 8-14): 3月=31天, 12月=31天,
-                        # 不能硬编码 day=30 (Q1 会得 Mar30 而非 Mar31, Q4 得 Dec30 而非 Dec31)
-                        last_day = calendar.monthrange(y, month_end)[1]
-                        target_end = datetime.date(y, month_end, last_day)
-                    else:
-                        # FY 无明确季度 → 用 12-31 (年度报告)
-                        target_end = datetime.date(y, 12, 31)
-            except Exception:
-                target_end = None
+        # 解析 report_period → 目标报告期结束日 (W40-#50: 抽出共用 helper,
+        # 同步修复 H1/H2 按季度映射错一个季度的 bug)
+        target_end = _report_period_target_end(report_period)
 
         def _filed_at_date(f: Dict[str, Any]) -> Optional[datetime.date]:
             raw = f.get("filedAt") or f.get("filing_date") or ""
@@ -925,7 +980,17 @@ class MStockAdapter(BaseStockAdapter):
     ) -> DownloadResult:
         """下载季度报告：外国私人发行人(FPI)使用6-K，美国本土公司使用10-Q"""
         form_type = self.get_quarterly_form_type(code)
-        return self._download_form(code, form_type, year, checkpoint, on_progress)
+        # W40-#50: report_period 之前被 **kwargs 吞掉 — FPI 公司 (NVO/XNET)
+        # 走 6-K 时季度窗口完全不生效, "10q 入口选错季度" 复现
+        report_period = kwargs.get("report_period")
+        if report_period and form_type == "6-K":
+            logger.info(
+                f"{code} quarterly→6-K, report_period={report_period} 季度窗口生效"
+            )
+        return self._download_form(
+            code, form_type, year, checkpoint, on_progress,
+            report_period=report_period,
+        )
 
     def get_quarterly_form_type(self, code: str) -> str:
         """判断公司的季度报告SEC归档表格类型。
