@@ -43,12 +43,36 @@ from unified_downloader.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# #64 (2026-08-24): 季度/临时类文档不做内容缓存.
+# 这些文档的内容强依赖季度选择逻辑 (窗口期从无→公告→真财报演变), 且缓存
+# key 不含 report_period → 同 code+year 下 Q1-Q4 共享 key 跨季度污染, 命中
+# 缓存又绕过 #60/#62 防御. 不做缓存 = 每次真实走季度窗口选择, 彻底消除.
+# 归一化: 小写 + 去掉连字符/下划线 (接受 "6K"/"10-Q"/"quarterly_report").
+_PERIODIC_DOC_TYPES = frozenset({
+    "6k", "10q", "tenq", "quarterly", "interimreport", "q1report", "q3report",
+    "quarterlyreport", "quarterlyq1", "quarterlyq3", "季度",
+})
+
+
+def _is_periodic_doc_type(document_type: Optional[str]) -> bool:
+    """季度/临时类文档 → 不做内容缓存 (#64)."""
+    if not document_type:
+        return False
+    norm = document_type.lower().replace("-", "").replace("_", "")
+    return norm in _PERIODIC_DOC_TYPES
+
 
 class UnifiedDownloader:
     """
     统一下载器
 
     支持A股、美股、港股年报和IPO文档下载
+
+    #64 (2026-08-24): 季度/临时类文档不做内容缓存 — 缓存 key 不含 report_period,
+    PDD 2026Q1/Q2/Q3 共享同一 key (md5(m:PDD:2026:6k)) → 跨季度污染; 且命中
+    缓存发生在季度选择逻辑之前 → 错误文件 (跨季度旧财报/非财报公告) 被缓存后
+    绕过 #60/#62 防御永远重试同一错误文件. 季度财报强依赖季度窗口选择 (窗口期
+    内内容会从无→公告→真财报演变), 缓存风险 > 收益, 直接不缓存.
 
     Example:
         >>> downloader = UnifiedDownloader()
@@ -160,8 +184,13 @@ class UnifiedDownloader:
         if market is None:
             market = self._detect_market(code)
 
-        # 检查缓存
-        if use_cache and self.config.download.cache_enabled:
+        # 检查缓存 (#64: 季度/临时类文档不缓存 — 见 _PERIODIC_DOC_TYPES, 否则
+        # 命中缓存绕过季度窗口选择/防御)
+        if (
+            use_cache
+            and self.config.download.cache_enabled
+            and not _is_periodic_doc_type(document_type)
+        ):
             hit = self._cache_manager.get(
                 market.value, code, year, document_type
             )
@@ -307,10 +336,11 @@ class UnifiedDownloader:
                     source=result.source,
                 )
 
-                # 添加到缓存
+                # 添加到缓存 (#64: 季度/临时类文档不缓存 — 见 _PERIODIC_DOC_TYPES)
                 if (
                     use_cache
                     and self.config.download.cache_enabled
+                    and not _is_periodic_doc_type(document_type)
                     and result.file_path
                 ):
                     # W40-#50 P1: 缓存写失败不应把成功下载记为市场失败 —

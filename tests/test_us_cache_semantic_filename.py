@@ -8,6 +8,7 @@ import pytest
 
 from unified_downloader.core.downloader import UnifiedDownloader
 from unified_downloader.models.enums import Market
+from unified_downloader.models.entities import DownloadResult
 
 
 def test_us_cache_hit_restores_semantic_download_filename(tmp_path, monkeypatch):
@@ -98,8 +99,13 @@ def test_us_annual_report_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
     assert result.file_path == str(Path("downloads/m/PDD/PDD_2024_20F.pdf"))
 
 
-def test_us_quarterly_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
-    """US quarterly/10q cache hits must preserve FPI 6-K semantic names."""
+def test_us_quarterly_doc_skips_cache(tmp_path, monkeypatch):
+    """#64: 季度文档 (10q→6-K) 不做内容缓存 — 即使 cache 里有条目也不命中.
+
+    之前季度文档缓存 key 不含 report_period, Q1/Q2/Q3 共享 key → 跨季度污染,
+    且命中缓存绕过季度窗口选择/防御 (错误文件被缓存后永远重试同一错误文件).
+    现在季度类文档直接跳过缓存 get/put, 每次真实走季度窗口选择.
+    """
     monkeypatch.chdir(tmp_path)
     downloader = UnifiedDownloader()
     monkeypatch.setattr(
@@ -108,16 +114,25 @@ def test_us_quarterly_cache_hit_uses_fpi_actual_form(tmp_path, monkeypatch):
         lambda code: "6-K",
     )
 
-    source = tmp_path / "PDD_2024_6K.pdf"
-    source.write_bytes(b"%PDF-1.4\nfpi quarterly cache fixture\n" + b"x" * 128)
+    # 预置一个 10q 缓存条目 (旧行为会命中并返回此 stale 文件)
+    source = tmp_path / "PDD_2024_6K_stale.pdf"
+    source.write_bytes(b"%PDF-1.4\nstale quarterly fixture\n" + b"x" * 128)
     downloader._cache_manager.put("m", "PDD", 2024, "10q", source)
     source.unlink()
+
+    # mock adapter 真实下载返回新文件
+    fresh = tmp_path / "PDD_2024_6K_fresh.pdf"
+    fresh.write_bytes(b"%PDF-1.4\nfresh quarterly\n" + b"x" * 128)
+    ok = DownloadResult(success=True, file_path=str(fresh))
+    monkeypatch.setattr(
+        downloader._adapters[Market.M], "download", lambda **kw: ok
+    )
 
     result = downloader.download("PDD", 2024, "10q", market=Market.M)
 
     assert result.success is True
-    assert result.cached is True
-    assert result.file_path == str(Path("downloads/m/PDD/PDD_2024_6K.pdf"))
+    assert result.cached is False          # 未命中缓存 (季度不缓存)
+    assert result.file_path == str(fresh)  # 走真实下载, 而非 stale 缓存
 
 
 def test_us_cache_hit_exposes_original_cache_path_metadata(tmp_path, monkeypatch):
