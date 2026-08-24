@@ -64,6 +64,13 @@ def _report_period_target_end(report_period):
 QUARTER_EARLY_DAYS = 14
 QUARTER_LATE_DAYS = 85  # 最晚在 ~85 天内 (跨季末但未到下一季末)
 
+# #62: 窗口内 exhibit 全 0 分时, "像一份财报" 的 filing size 下限.
+# 依据: 非财报公告常 <45KB (PDD 8/21 董事去世公告 11.1KB / RACE PR 3KB /
+# XNET 普通公告 17~45KB), 而真实财报 filing 200KB+ (PDD Q2 212733 /
+# XNET Q2 206088 / RACE 中报 209000 / NVO 1.73MB). 窗口内最大 size 低于
+# 此值 = 窗口内只有非财报公告 → 不下载 (返回 None 由调用方明确失败).
+MIN_EARNINGS_FILING_SIZE = 50_000
+
 
 def _filing_filed_date(f: Dict[str, Any]) -> Optional[datetime.date]:
     """filing dict → filedAt 日期 (兼容 str / date)."""
@@ -648,23 +655,36 @@ class MStockAdapter(BaseStockAdapter):
                 return _try_ir_fallback()
 
             filing = filings[0]
-            if form_type == "6-K" and len(filings) > 1:
+            if form_type == "6-K" and _quarter_window(report_period) is not None:
+                # #60/#62: report_period 可解析出目标季度窗口时, 6-K 选择全权交给
+                # _pick_earnings_6k (含单条 filing). 返回 None = 窗口内无 filing
+                # (#60: 财报未发布/缓存未收录, 旧逻辑回退 max(size) 跨季度错选,
+                # PDD 2026Q2 下成 2025Q4 3/26) 或窗口内只有非财报公告 (#62: 全
+                # 0 分且 size 低于财报下限, PDD 8/21 董事去世公告 11.1KB) →
+                # 明确失败等真财报, 绝不回退跨季度 size 最大, 也不下载公告.
                 picked = self._pick_earnings_6k(filings, report_period=report_period)
-                if picked is not None:
-                    filing = picked
-                elif _quarter_window_missed(filings, report_period):
-                    # #60: 有目标报告期 (如 2026Q2) 且窗口可解析, 但窗口内无任何
-                    # filing (财报未发布 / 搜索缓存未收录). 旧逻辑回退 max(size)
-                    # 完全无视季度 → 选到别的季度财报 (PDD 2026Q2 实际下成 2025Q4
-                    # 3/26, 293067 > 212733) → 明确失败, 等财报收录后重跑.
+                if picked is None:
+                    if _quarter_window_missed(filings, report_period):
+                        detail = "窗口内无 filing, 财报可能未发布或搜索缓存未收录"
+                    else:
+                        detail = (
+                            "窗口内只有非财报公告 (exhibit 无财报特征且 size 低于"
+                            f"财报下限 {MIN_EARNINGS_FILING_SIZE}B)"
+                        )
                     return DownloadResult(
                         success=False,
                         error_code="NO_FILINGS_IN_QUARTER_WINDOW",
                         error_message=(
-                            f"{ticker} {report_period} 目标季度窗口内无 6-K 财报 "
-                            f"filing (财报可能未发布或搜索缓存未收录), 未下载任何文件"
+                            f"{ticker} {report_period} 目标季度窗口内无可信 6-K 财报 "
+                            f"filing ({detail}), 未下载任何文件"
                         ),
                     )
+                filing = picked
+            elif form_type == "6-K" and len(filings) > 1:
+                # 无 report_period (或无法解析) → 旧逻辑: 打分优先, NVO size 回退.
+                picked = self._pick_earnings_6k(filings, report_period=report_period)
+                if picked is not None:
+                    filing = picked
                 else:
                     # 2026-08-13 NVO 修复: _pick_earnings_6k 对“单文档 6-K”
                     # (NVO 等, 正文=primary doc, 无独立 EX-99 exhibit) 无 exhibit
@@ -672,8 +692,8 @@ class MStockAdapter(BaseStockAdapter):
                     # 会抓到普通公告 (NVO 8-10 股票回购 24KB) 而非 8-4 完整财报
                     # (caq22026.htm 1.73MB). 改为选 size 最大的 filing (财报正文
                     # 通常远大于普通公告/回购公告), 避免 SUSPICIOUS_TOO_SMALL.
-                    # 该回退只在无 report_period (无目标窗口) 时生效 — 有窗口时
-                    # 上面的 _quarter_window_missed 已拦截, 不会跨季度乱选 (#60).
+                    # 该回退只在无目标窗口时生效 — 有窗口时上面的分支已按季度
+                    # 硬约束拦截 (#60/#62), 不会跨季度/选到非财报公告.
                     best = max(
                         filings, key=lambda f: int(f.get("size") or 0)
                     )
@@ -685,22 +705,6 @@ class MStockAdapter(BaseStockAdapter):
                             f"size={filing.get('size')})"
                         )
                         filing = best
-            elif (
-                form_type == "6-K"
-                and len(filings) == 1
-                and _quarter_window_missed(filings, report_period)
-            ):
-                # #60: 单条 6-K 也要受目标季度窗口硬约束 — 仅剩的一条不在窗口内
-                # (例如缓存里只有 3 月发布的上一季度财报) 同样明确失败, 不硬下
-                # 错误季度的文件.
-                return DownloadResult(
-                    success=False,
-                    error_code="NO_FILINGS_IN_QUARTER_WINDOW",
-                    error_message=(
-                        f"{ticker} {report_period} 目标季度窗口内无 6-K 财报 filing "
-                        f"(仅命中窗口外 {filing.get('filedAt')}), 未下载任何文件"
-                    ),
-                )
 
             return self._download_filing(
                 filing, ticker, form_type, year, on_progress, checkpoint
@@ -754,7 +758,7 @@ class MStockAdapter(BaseStockAdapter):
         目标季度 (XNET Q2 8-13 发布 size=206088, Q4+FY2025 3-12 发布
         size=244676 更大 → 误选 Q4).
 
-        修复策略 (两层):
+        修复策略 (三层):
         1. 若传了 report_period (如 "2026Q2") 且能解析出目标季度 → 用
            filedAt 日期窗口优先匹配: 目标季度结束日 + [EARLY_DAYS, LATE_DAYS]
            天窗口内的 filing 优先. 窗口内选 exhibit 打分最高的; 若窗口内
@@ -764,7 +768,12 @@ class MStockAdapter(BaseStockAdapter):
            缓存未收录) → 直接返回 None, 不再落进跨季度的旧逻辑 — 由
            _download_form 明确失败, 绝不回退选别的季度财报 (PDD 2026Q2
            下成 2025Q4 3/26 的根因).
-        3. 无 report_period 或无法解析 → 回退旧逻辑 (打分 → None).
+        3. #62 非财报防御 (fail-closed): 窗口内 exhibit 全 0 分时, size 最大者
+           必须 ≥ MIN_EARNINGS_FILING_SIZE (50KB) 才接受. 已知 size 且全部低于
+           下限 = 窗口内只有非财报公告 (PDD 8/21 董事去世公告 11.1KB 实测);
+           size 未知 (sec-api 兜底路径 filings 无 size 字段) = 无法证明"像财报"
+           — 两者都返回 None, 由 _download_form 明确失败等真财报, 而非下载公告.
+        4. 无 report_period 或无法解析 → 回退旧逻辑 (打分 → None).
         """
         # 目标季度窗口 (季度结束后第 N~M 天发布财报): 常量提到模块级
         # (QUARTER_EARLY_DAYS / QUARTER_LATE_DAYS), _download_form 也要用.
@@ -813,10 +822,32 @@ class MStockAdapter(BaseStockAdapter):
                         best_in = f
                 if best_score_in > 0:
                     return best_in
-                # 全无 exhibit 可打分 → 选窗口内 size 最大
+                # 全无 exhibit 可打分 → 选窗口内 size 最大, 但先过"像不像财报"
+                # 下限 (#62): 窗口内常混有非财报公告 (董事变动/PR), 财报 filing
+                # 通常 ≥ MIN_EARNINGS_FILING_SIZE (50KB). fail-closed 双拦截:
+                #   - 已知 size 且低于下限 = 疑似非财报公告 → 拒绝
+                #   - size 未知 (sec-api 兜底路径 filings 无 size 字段) 且无
+                #     exhibit 特征 = 无法证明"像财报" → 同样拒绝, 不赌下载
+                #     (PDD 8/21 公告经 sec-api 路径复现过, PR #63 review 实证).
                 best_in = max(
                     in_window, key=lambda f: int(f.get("size") or 0)
                 )
+                best_size_in = int(best_in.get("size") or 0)
+                if best_size_in < MIN_EARNINGS_FILING_SIZE:
+                    if best_size_in > 0:
+                        logger.info(
+                            f"[m_stock] 6-K 窗口内 exhibit 全 0 分且最大 size="
+                            f"{best_size_in} < {MIN_EARNINGS_FILING_SIZE} "
+                            f"(疑似非财报公告, PDD 8/21 董事去世公告 11.1KB 实测), "
+                            f"返回 None 等真财报"
+                        )
+                    else:
+                        logger.info(
+                            f"[m_stock] 6-K 窗口内 exhibit 全 0 分且 filing size 未知 "
+                            f"(疑似 sec-api 兜底路径, 无 size 字段), 无法验证财报特征, "
+                            f"返回 None 等可证数据 (edgar 恢复/财报入库)"
+                        )
+                    return None
                 logger.info(
                     f"[m_stock] 6-K 窗口内无 exhibit 财报分, 选 size 最大: "
                     f"{best_in.get('accessionNo')} size={best_in.get('size')}"
