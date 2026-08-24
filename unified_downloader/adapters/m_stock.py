@@ -8,7 +8,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Tuple
 
 from unified_downloader.adapters.base import BaseStockAdapter
 from unified_downloader.models.enums import Market
@@ -56,6 +56,53 @@ def _report_period_target_end(report_period):
         return datetime.date(y, month_end, last_day)
     except Exception:
         return None
+
+
+# 目标季度财报发布窗口: 报告期结束后 [QUARTER_EARLY_DAYS, QUARTER_LATE_DAYS] 天
+# W40-#50 真实数据验证 (TSM): Q4 财报最早 ~16 天就发布 (次年 1 月中旬),
+# 25 天会漏; 14 天与相邻季度窗口 (Q3 止 12-24) 仍无重叠
+QUARTER_EARLY_DAYS = 14
+QUARTER_LATE_DAYS = 85  # 最晚在 ~85 天内 (跨季末但未到下一季末)
+
+
+def _filing_filed_date(f: Dict[str, Any]) -> Optional[datetime.date]:
+    """filing dict → filedAt 日期 (兼容 str / date)."""
+    raw = f.get("filedAt") or f.get("filing_date") or ""
+    if isinstance(raw, datetime.date):
+        return raw
+    try:
+        return datetime.date.fromisoformat(str(raw)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _quarter_window(report_period: Optional[str]) -> Optional[Tuple[datetime.date, datetime.date]]:
+    """report_period → 目标季度窗口 (window_lo, window_hi); 无法解析返回 None."""
+    target_end = _report_period_target_end(report_period)
+    if target_end is None:
+        return None
+    lo = target_end + datetime.timedelta(days=QUARTER_EARLY_DAYS)
+    hi = target_end + datetime.timedelta(days=QUARTER_LATE_DAYS)
+    return lo, hi
+
+
+def _quarter_window_missed(
+    filings: List[Dict[str, Any]], report_period: Optional[str]
+) -> bool:
+    """目标报告期有可解析窗口, 但 filings 里没有一条落在窗口内.
+
+    #60 修复: 命中表示目标季度财报未发布 / 搜索缓存未收录 — 调用方应明确失败,
+    绝不能回退按 size 选别的季度财报 (PDD 2026Q2 下成 2025Q4 3/26 的根因).
+    """
+    window = _quarter_window(report_period)
+    if window is None:
+        return False
+    lo, hi = window
+    for f in filings:
+        d = _filing_filed_date(f)
+        if d is not None and lo <= d <= hi:
+            return False
+    return True
 
 
 def _resolve_sec_user_agent(cfg) -> str:
@@ -605,6 +652,19 @@ class MStockAdapter(BaseStockAdapter):
                 picked = self._pick_earnings_6k(filings, report_period=report_period)
                 if picked is not None:
                     filing = picked
+                elif _quarter_window_missed(filings, report_period):
+                    # #60: 有目标报告期 (如 2026Q2) 且窗口可解析, 但窗口内无任何
+                    # filing (财报未发布 / 搜索缓存未收录). 旧逻辑回退 max(size)
+                    # 完全无视季度 → 选到别的季度财报 (PDD 2026Q2 实际下成 2025Q4
+                    # 3/26, 293067 > 212733) → 明确失败, 等财报收录后重跑.
+                    return DownloadResult(
+                        success=False,
+                        error_code="NO_FILINGS_IN_QUARTER_WINDOW",
+                        error_message=(
+                            f"{ticker} {report_period} 目标季度窗口内无 6-K 财报 "
+                            f"filing (财报可能未发布或搜索缓存未收录), 未下载任何文件"
+                        ),
+                    )
                 else:
                     # 2026-08-13 NVO 修复: _pick_earnings_6k 对“单文档 6-K”
                     # (NVO 等, 正文=primary doc, 无独立 EX-99 exhibit) 无 exhibit
@@ -612,6 +672,8 @@ class MStockAdapter(BaseStockAdapter):
                     # 会抓到普通公告 (NVO 8-10 股票回购 24KB) 而非 8-4 完整财报
                     # (caq22026.htm 1.73MB). 改为选 size 最大的 filing (财报正文
                     # 通常远大于普通公告/回购公告), 避免 SUSPICIOUS_TOO_SMALL.
+                    # 该回退只在无 report_period (无目标窗口) 时生效 — 有窗口时
+                    # 上面的 _quarter_window_missed 已拦截, 不会跨季度乱选 (#60).
                     best = max(
                         filings, key=lambda f: int(f.get("size") or 0)
                     )
@@ -623,6 +685,22 @@ class MStockAdapter(BaseStockAdapter):
                             f"size={filing.get('size')})"
                         )
                         filing = best
+            elif (
+                form_type == "6-K"
+                and len(filings) == 1
+                and _quarter_window_missed(filings, report_period)
+            ):
+                # #60: 单条 6-K 也要受目标季度窗口硬约束 — 仅剩的一条不在窗口内
+                # (例如缓存里只有 3 月发布的上一季度财报) 同样明确失败, 不硬下
+                # 错误季度的文件.
+                return DownloadResult(
+                    success=False,
+                    error_code="NO_FILINGS_IN_QUARTER_WINDOW",
+                    error_message=(
+                        f"{ticker} {report_period} 目标季度窗口内无 6-K 财报 filing "
+                        f"(仅命中窗口外 {filing.get('filedAt')}), 未下载任何文件"
+                    ),
+                )
 
             return self._download_filing(
                 filing, ticker, form_type, year, on_progress, checkpoint
@@ -682,26 +760,17 @@ class MStockAdapter(BaseStockAdapter):
            天窗口内的 filing 优先. 窗口内选 exhibit 打分最高的; 若窗口内
            全无 exhibit 可打分, 选窗口内 size 最大的. 这保证 XNET 选到
            8-13 的 Q2 (窗口 ~7-30~9-18) 而不是 3-12 的 Q4.
-        2. 无 report_period 或窗口无命中 → 回退旧逻辑 (打分 → None).
+        2. #60 硬约束: 有可解析窗口但窗口内无任何 filing (财报未发布/搜索
+           缓存未收录) → 直接返回 None, 不再落进跨季度的旧逻辑 — 由
+           _download_form 明确失败, 绝不回退选别的季度财报 (PDD 2026Q2
+           下成 2025Q4 3/26 的根因).
+        3. 无 report_period 或无法解析 → 回退旧逻辑 (打分 → None).
         """
-        # 目标季度窗口 (季度结束后第 N~M 天发布财报)
-        # W40-#50 真实数据验证 (TSM): Q4 财报最早 ~16 天就发布 (次年 1 月
-        # 中旬), 25 天会漏; 14 天与相邻季度窗口 (Q3 止 12-24) 仍无重叠
-        QUARTER_EARLY_DAYS = 14
-        QUARTER_LATE_DAYS = 85    # 最晚在 ~85 天内 (跨季末但未到下一季末)
-
+        # 目标季度窗口 (季度结束后第 N~M 天发布财报): 常量提到模块级
+        # (QUARTER_EARLY_DAYS / QUARTER_LATE_DAYS), _download_form 也要用.
         # 解析 report_period → 目标报告期结束日 (W40-#50: 抽出共用 helper,
         # 同步修复 H1/H2 按季度映射错一个季度的 bug)
         target_end = _report_period_target_end(report_period)
-
-        def _filed_at_date(f: Dict[str, Any]) -> Optional[datetime.date]:
-            raw = f.get("filedAt") or f.get("filing_date") or ""
-            if isinstance(raw, datetime.date):
-                return raw
-            try:
-                return datetime.date.fromisoformat(str(raw)[:10])
-            except (ValueError, TypeError):
-                return None
 
         def _exhibit_score(f: Dict[str, Any]) -> int:
             """计算 filing 的 exhibit 财报特征分 (旧逻辑)."""
@@ -717,13 +786,13 @@ class MStockAdapter(BaseStockAdapter):
                     score += 1 if ex_size > 100_000 else 0
             return score
 
-        # ── 策略 1: 目标季度日期窗口优先 ──
+        # ── 策略 1: 目标季度日期窗口优先 (窗口边界硬约束, #60) ──
         if target_end is not None:
             window_lo = target_end + datetime.timedelta(days=QUARTER_EARLY_DAYS)
             window_hi = target_end + datetime.timedelta(days=QUARTER_LATE_DAYS)
             in_window = []
             for f in filings:
-                d = _filed_at_date(f)
+                d = _filing_filed_date(f)
                 if d is None:
                     continue
                 if window_lo <= d <= window_hi:
@@ -754,7 +823,17 @@ class MStockAdapter(BaseStockAdapter):
                 )
                 return best_in
 
-        # ── 策略 2: 旧逻辑 (exhibit 打分, 无窗口) ──
+            # #60: 窗口内无任何 filing → 直接返回 None, 不再落进下面的策略 2
+            # (旧逻辑会对窗口外其他季度的 exhibit 打分 / 按 size 选, 同样会
+            # 选错季度 — PDD 2026Q2 下成 2025Q4 3/26 的根因). 目标季度财报
+            # 未发布/未收录时, 由 _download_form 明确失败处理.
+            logger.info(
+                f"[m_stock] 6-K 目标季度窗口 {window_lo}~{window_hi} 内无 filing, "
+                f"返回 None (财报未发布或未收录), 不跨季度选文件"
+            )
+            return None
+
+        # ── 策略 2: 旧逻辑 (exhibit 打分, 无窗口) — 仅无 report_period / 无法解析 ──
         best = None
         best_score = -1
         for filing in filings:
