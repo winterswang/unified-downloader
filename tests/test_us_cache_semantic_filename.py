@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from unified_downloader.core.downloader import UnifiedDownloader, _is_periodic_doc_type
+from unified_downloader.core.downloader import UnifiedDownloader
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult
 
