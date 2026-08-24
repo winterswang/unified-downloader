@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # 缓存又绕过 #60/#62 防御. 不做缓存 = 每次真实走季度窗口选择, 彻底消除.
 # 归一化: 小写 + 去掉连字符/下划线 (接受 "6K"/"10-Q"/"quarterly_report").
 _PERIODIC_DOC_TYPES = frozenset({
-    "6k", "10q", "quarterly", "interimreport", "q1report", "q3report",
+    "6k", "10q", "tenq", "quarterly", "interimreport", "q1report", "q3report",
     "quarterlyreport", "quarterlyq1", "quarterlyq3", "季度",
 })
 

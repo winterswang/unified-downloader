@@ -26,7 +26,7 @@ from unified_downloader.models.entities import DownloadResult
 class TestIsPeriodicDocType:
     @pytest.mark.parametrize(
         "doc_type",
-        ["6k", "6K", "10q", "10-Q", "quarterly", "interim_report",
+        ["6k", "6K", "10q", "10-Q", "ten_q", "quarterly", "interim_report",
          "q1_report", "q3_report", "quarterly_report", "季度"],
     )
     def test_periodic_types(self, doc_type):
@@ -106,3 +106,64 @@ class TestQuarterlySkipsCache:
         assert result.success is True
         assert result.cached is False
         assert result.file_path == str(fresh)
+
+    def test_ten_q_alias_skips_cache(self, monkeypatch, tmp_path):
+        """#64 review defect2: ten_q 别名 (m_stock._QUARTERLY_DOC_TYPES 含) 也跳过缓存."""
+        downloader, fresh = self._downloader(monkeypatch, tmp_path)
+        stale = tmp_path / "PDD_2024_6K_stale.pdf"
+        stale.write_bytes(b"%PDF-1.4\nstale\n" + b"x" * 128)
+        downloader._cache_manager.put("m", "PDD", 2024, "ten_q", stale)
+        stale.unlink()
+
+        result = downloader.download("PDD", 2024, "ten_q", market=Market.M)
+        assert result.success is True
+        assert result.cached is False
+        assert result.file_path == str(fresh)
+
+    @pytest.mark.asyncio
+    async def test_async_6k_skips_cache(self, monkeypatch, tmp_path):
+        """#64 review defect1: async 路径季度文档也不命中缓存 (async get/put 都门控)."""
+        monkeypatch.chdir(tmp_path)
+        from unified_downloader.core.async_downloader import AsyncUnifiedDownloader
+        downloader = AsyncUnifiedDownloader()
+
+        stale = tmp_path / "PDD_2024_6K_stale.pdf"
+        stale.write_bytes(b"%PDF-1.4\nstale async\n" + b"x" * 128)
+        downloader._downloader._cache_manager.put("m", "PDD", 2024, "6k", stale)
+        stale.unlink()
+
+        # mock async 真实下载 (async_download 是协程, 需 awaitable)
+        fresh = tmp_path / "PDD_2024_6K_fresh.pdf"
+        fresh.write_bytes(b"%PDF-1.4\nfresh async\n" + b"x" * 128)
+        ok = DownloadResult(success=True, file_path=str(fresh))
+
+        async def fake_async_download(*a, **kw):
+            return ok
+
+        monkeypatch.setattr(
+            downloader._downloader._adapters[Market.M], "async_download",
+            fake_async_download,
+        )
+
+        result = await downloader.download("PDD", 2024, "6k", market=Market.M)
+        assert result.success is True
+        assert result.cached is False
+        assert result.file_path == str(fresh)
+        await downloader.close()
+
+    @pytest.mark.asyncio
+    async def test_async_annual_still_cached(self, monkeypatch, tmp_path):
+        """回归保护: async 年度文档 (10k) 仍走缓存."""
+        monkeypatch.chdir(tmp_path)
+        from unified_downloader.core.async_downloader import AsyncUnifiedDownloader
+        downloader = AsyncUnifiedDownloader()
+
+        source = tmp_path / "AAPL_2024_10K.pdf"
+        source.write_bytes(b"%PDF-1.4\nasync annual\n" + b"x" * 128)
+        downloader._downloader._cache_manager.put("m", "AAPL", 2024, "10k", source)
+        source.unlink()
+
+        result = await downloader.download("AAPL", 2024, "10k", market=Market.M)
+        assert result.success is True
+        assert result.cached is True
+        await downloader.close()

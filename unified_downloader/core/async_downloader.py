@@ -14,7 +14,7 @@ from unified_downloader.models.entities import (
     TaskStatus,
 )
 from unified_downloader.models.callbacks import ProgressCallbackType
-from unified_downloader.core.downloader import UnifiedDownloader
+from unified_downloader.core.downloader import UnifiedDownloader, _is_periodic_doc_type
 from unified_downloader.core.config import Config, get_default_config
 from unified_downloader.infra import AsyncHTTPClient
 
@@ -63,13 +63,16 @@ class AsyncUnifiedDownloader:
                 use_cache=use_cache, **kwargs
             )
 
-        # 检查缓存
+        # 检查缓存 (#64 review 补 async: 季度/临时类文档不缓存 — 与 sync 一致,
+        # 否则 async API 命中缓存绕过季度窗口选择/防御)
         if market is None:
             market = self._downloader._detect_market(code)
 
-        hit = self._downloader._cache_manager.get(
-            market.value, code, year, document_type
-        )
+        hit = None
+        if not _is_periodic_doc_type(document_type):
+            hit = self._downloader._cache_manager.get(
+                market.value, code, year, document_type
+            )
         if hit:
             # W40-#49: 与同步路径一致 — 语义路径直接返回; 老条目走还原。
             # 另补齐 V4: 要 PDF 而缓存是 HTML 时不短路缓存 (sync 已有,
@@ -195,6 +198,7 @@ class AsyncUnifiedDownloader:
             if (
                 use_cache
                 and self.config.download.cache_enabled
+                and not _is_periodic_doc_type(document_type)
                 and result.file_path
             ):
                 try:
