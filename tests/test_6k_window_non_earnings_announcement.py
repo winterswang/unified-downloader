@@ -86,12 +86,41 @@ class TestPickEarningsNonEarningsGate:
         assert picked is not None
         assert picked["accessionNo"] == "AUG-EARN-PR"
 
-    def test_size_unknown_keeps_old_behavior(self, adapter):
-        """size 全部未知 (0/None, 兼容无 size 数据源) → 接受窗口内最大者."""
+    def test_size_unknown_fails_closed(self, adapter):
+        """size 未知 (sec-api 兜底路径无 size 字段) → fail-closed 返回 None.
+
+        PR #63 review 实证: sec-api filings 无 size/_exhibits, size=0 被当
+        "未知→接受" 会让 PDD 8/21 公告场景在该路径照旧下载 — 无法证明"像
+        财报"时宁可失败等可证数据, 不赌下载.
+        """
         filings = [_mk_filing("A", 0, "2026-08-21")]
         picked = adapter._pick_earnings_6k(filings, report_period="2026Q2")
-        assert picked is not None
-        assert picked["accessionNo"] == "A"
+        assert picked is None
+
+    def test_sec_api_shaped_filing_without_size_not_downloaded(self, adapter):
+        """#62 review 复现: sec-api 形态 filing (无 size 无 _exhibits) 在窗口内
+        → _download_form 明确失败, 不下载."""
+        sec_api_filing = {
+            "ticker": "PDD",
+            "formType": "6-K",
+            "filedAt": "2026-08-21T00:00:00",
+            "accessionNo": "0001193125-26-000123",
+            "cik": "1737806",
+            "companyName": "PDD Holdings Inc.",
+            "description": "Announcement of death of director",
+            "linkToTxt": "https://example.com/x.htm",
+            "linkToHtml": "https://example.com/x.htm",
+            "source": "sec_api",
+        }
+        with patch.object(adapter, "_search_filings", return_value=[sec_api_filing]), \
+             patch.object(adapter, "_download_filing") as mock_dl:
+            result = adapter._download_form(
+                "PDD", "6-K", 2026, None, None, report_period="2026Q2"
+            )
+
+        assert result.success is False
+        assert result.error_code == "NO_FILINGS_IN_QUARTER_WINDOW"
+        mock_dl.assert_not_called()
 
     def test_threshold_boundary(self, adapter):
         """下限边界: 低于 MIN_EARNINGS_FILING_SIZE 拒绝, 等于则接受."""

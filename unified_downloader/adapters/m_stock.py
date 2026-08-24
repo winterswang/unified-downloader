@@ -768,10 +768,11 @@ class MStockAdapter(BaseStockAdapter):
            缓存未收录) → 直接返回 None, 不再落进跨季度的旧逻辑 — 由
            _download_form 明确失败, 绝不回退选别的季度财报 (PDD 2026Q2
            下成 2025Q4 3/26 的根因).
-        3. #62 非财报防御: 窗口内 exhibit 全 0 分时, size 最大者必须 ≥
-           MIN_EARNINGS_FILING_SIZE (50KB) 才接受; 已知 size 且全部低于下限
-           = 窗口内只有非财报公告 (PDD 8/21 董事去世公告 11.1KB 实测) →
-           返回 None, 由 _download_form 明确失败等真财报, 而非下载公告.
+        3. #62 非财报防御 (fail-closed): 窗口内 exhibit 全 0 分时, size 最大者
+           必须 ≥ MIN_EARNINGS_FILING_SIZE (50KB) 才接受. 已知 size 且全部低于
+           下限 = 窗口内只有非财报公告 (PDD 8/21 董事去世公告 11.1KB 实测);
+           size 未知 (sec-api 兜底路径 filings 无 size 字段) = 无法证明"像财报"
+           — 两者都返回 None, 由 _download_form 明确失败等真财报, 而非下载公告.
         4. 无 report_period 或无法解析 → 回退旧逻辑 (打分 → None).
         """
         # 目标季度窗口 (季度结束后第 N~M 天发布财报): 常量提到模块级
@@ -823,20 +824,29 @@ class MStockAdapter(BaseStockAdapter):
                     return best_in
                 # 全无 exhibit 可打分 → 选窗口内 size 最大, 但先过"像不像财报"
                 # 下限 (#62): 窗口内常混有非财报公告 (董事变动/PR), 财报 filing
-                # 通常 ≥ MIN_EARNINGS_FILING_SIZE (50KB). 已知 size 且最大值仍
-                # 低于下限 = 窗口内只有非财报公告 → 返回 None 等真财报, 不下载.
-                # (size 全部未知/0 时无法判定, 保持旧行为接受, 兼容无 size 数据源.)
+                # 通常 ≥ MIN_EARNINGS_FILING_SIZE (50KB). fail-closed 双拦截:
+                #   - 已知 size 且低于下限 = 疑似非财报公告 → 拒绝
+                #   - size 未知 (sec-api 兜底路径 filings 无 size 字段) 且无
+                #     exhibit 特征 = 无法证明"像财报" → 同样拒绝, 不赌下载
+                #     (PDD 8/21 公告经 sec-api 路径复现过, PR #63 review 实证).
                 best_in = max(
                     in_window, key=lambda f: int(f.get("size") or 0)
                 )
                 best_size_in = int(best_in.get("size") or 0)
-                if 0 < best_size_in < MIN_EARNINGS_FILING_SIZE:
-                    logger.info(
-                        f"[m_stock] 6-K 窗口内 exhibit 全 0 分且最大 size="
-                        f"{best_size_in} < {MIN_EARNINGS_FILING_SIZE} "
-                        f"(疑似非财报公告, PDD 8/21 董事去世公告 11.1KB 实测), "
-                        f"返回 None 等真财报"
-                    )
+                if best_size_in < MIN_EARNINGS_FILING_SIZE:
+                    if best_size_in > 0:
+                        logger.info(
+                            f"[m_stock] 6-K 窗口内 exhibit 全 0 分且最大 size="
+                            f"{best_size_in} < {MIN_EARNINGS_FILING_SIZE} "
+                            f"(疑似非财报公告, PDD 8/21 董事去世公告 11.1KB 实测), "
+                            f"返回 None 等真财报"
+                        )
+                    else:
+                        logger.info(
+                            f"[m_stock] 6-K 窗口内 exhibit 全 0 分且 filing size 未知 "
+                            f"(疑似 sec-api 兜底路径, 无 size 字段), 无法验证财报特征, "
+                            f"返回 None 等可证数据 (edgar 恢复/财报入库)"
+                        )
                     return None
                 logger.info(
                     f"[m_stock] 6-K 窗口内无 exhibit 财报分, 选 size 最大: "
