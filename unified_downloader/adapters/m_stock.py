@@ -111,6 +111,14 @@ QUARTER_LATE_DAYS = 85  # 最晚在 ~85 天内 (跨季末但未到下一季末)
 # 此值 = 窗口内只有非财报公告 → 不下载 (返回 None 由调用方明确失败).
 MIN_EARNINGS_FILING_SIZE = 50_000
 
+# #68: 内容嗅探参数 - 窗口内多条大 filing 且 exhibit 元数据全 0 分时的
+# 兜底分档. BABA 2027Q1 实测: 8/6 月度股份申报 1.24MB 比真财报 (8/20,
+# 481KB) 还大, size 启发式失效 -> 拉候选 exhibit 头部内容按
+# _EARNINGS_KEYWORDS 计数, 密度最高者胜出 (实测 revenue×48 vs 0).
+CONTENT_SNIFF_MAX_CANDIDATES = 5   # 最多嗅探 size 最高的几条
+CONTENT_SNIFF_MAX_BYTES = 200_000  # 每条 exhibit 只读头部 (关键词密度足够)
+CONTENT_SNIFF_MAX_EXHIBITS = 2     # 每条 filing 最多嗅探前几个 exhibit
+
 
 def _filing_filed_date(f: Dict[str, Any]) -> Optional[datetime.date]:
     """filing dict → filedAt 日期 (兼容 str / date)."""
@@ -946,6 +954,19 @@ class MStockAdapter(BaseStockAdapter):
                             f"返回 None 等可证数据 (edgar 恢复/财报入库)"
                         )
                     return None
+                # #68: 窗口内多条 ≥ 下限的候选且元数据全 0 分 (描述全是通用
+                # "EXHIBIT 99.1") 时, "size 最大" 会误选大号非财报申报 -
+                # BABA 实测 8/6 月度股份申报 1.24MB 比真财报 481KB 还大.
+                # 拉各候选 exhibit 头部内容做财报关键词计数, 密度最高者胜出;
+                # 全部拉取失败退回 size 最大 (旧行为).
+                big_candidates = [
+                    f for f in in_window
+                    if int(f.get("size") or 0) >= MIN_EARNINGS_FILING_SIZE
+                ]
+                if len(big_candidates) > 1:
+                    sniffed = self._pick_by_content_sniff(big_candidates)
+                    if sniffed is not None:
+                        return sniffed
                 logger.info(
                     f"[m_stock] 6-K 窗口内无 exhibit 财报分, 选 size 最大: "
                     f"{best_in.get('accessionNo')} size={best_in.get('size')}"
@@ -974,6 +995,67 @@ class MStockAdapter(BaseStockAdapter):
                 best_score = score
                 best = filing
         return best if best_score > 0 else None
+
+    def _pick_by_content_sniff(
+        self, filings: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """(#68) 窗口内多条大 filing 且 exhibit 元数据全 0 分时, 按内容选.
+
+        BABA 2027Q1 实测: 8/6 月度股份申报 (Monthly Return) 1.24MB 比真财报
+        (8/20, 481KB) 还大, "size 最大" 启发式误选; 内容计数则一目了然
+        (真财报 exhibit 头部 revenue×48 / net income×6, 月度申报 0 次).
+        拉 size top-N 候选的前几个 exhibit 头部做 _EARNINGS_KEYWORDS 计数,
+        密度最高者胜出. 全部拉取失败 (网络/限速) 返回 None, 调用方退回
+        size 最大 (旧行为, fail-open 与旧路径一致).
+        """
+        ranked = sorted(
+            filings, key=lambda f: int(f.get("size") or 0), reverse=True
+        )[:CONTENT_SNIFF_MAX_CANDIDATES]
+        if self._sec_user_agent:
+            sec_ua = self._sec_user_agent
+        else:
+            from unified_downloader.core.config import get_default_config
+            sec_ua = _resolve_sec_user_agent(get_default_config())
+        headers = {
+            "User-Agent": sec_ua,
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+        best = None
+        best_score = 0
+        for f in ranked:
+            exhibits = [
+                ex for ex in f.get("_exhibits", []) if ex.get("url")
+            ][:CONTENT_SNIFF_MAX_EXHIBITS]
+            score = 0
+            for ex in exhibits:
+                try:
+                    self._rate_limiter.wait("edgar_download")
+                    resp = self._http_client.get(ex["url"], headers=headers)
+                    if resp.status_code != 200:
+                        continue
+                    chunk = resp.content[:CONTENT_SNIFF_MAX_BYTES]
+                    blob = chunk.decode("utf-8", errors="replace").lower()
+                    score += sum(
+                        blob.count(kw) for kw in self._EARNINGS_KEYWORDS
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"[m_stock] content sniff 拉取失败 {ex.get('url')}: {e}"
+                    )
+            logger.info(
+                f"[m_stock] 6-K 内容嗅探: {f.get('accessionNo')} "
+                f"filed={f.get('filedAt')} size={f.get('size')} "
+                f"财报关键词 {score} 次"
+            )
+            if score > best_score:
+                best = f
+                best_score = score
+        if best is not None:
+            logger.info(
+                f"[m_stock] 6-K 内容嗅探选出 {best.get('accessionNo')} "
+                f"(财报关键词 {best_score} 次)"
+            )
+        return best
 
     def _try_custom_ir_source(
         self,
