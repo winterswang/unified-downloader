@@ -113,7 +113,8 @@ class TestQ4CrossYear:
         """_download_form 对 Q4/FY/H2 的 6-K 搜索要放行次年 filing"""
         captured = {}
 
-        def fake_search(ticker, form_type, year, size=10, include_next_year=False):
+        def fake_search(ticker, form_type, year, size=10, include_next_year=False,
+                        **kwargs):  # prev_year_floor (#66)
             captured["include_next_year"] = include_next_year
             return [_mk_filing("Q4", 400000, "2026-02-10")]
 
@@ -130,7 +131,8 @@ class TestQ4CrossYear:
     def test_download_form_no_flag_for_q2(self, adapter):
         captured = {}
 
-        def fake_search(ticker, form_type, year, size=10, include_next_year=False):
+        def fake_search(ticker, form_type, year, size=10, include_next_year=False,
+                        **kwargs):  # prev_year_floor (#66)
             captured["include_next_year"] = include_next_year
             return [_mk_filing("Q2", 200000, "2025-08-13")]
 
@@ -147,7 +149,8 @@ class TestQ4CrossYear:
     def test_download_form_no_flag_without_report_period(self, adapter):
         captured = {}
 
-        def fake_search(ticker, form_type, year, size=10, include_next_year=False):
+        def fake_search(ticker, form_type, year, size=10, include_next_year=False,
+                        **kwargs):  # prev_year_floor (#66)
             captured["include_next_year"] = include_next_year
             return [_mk_filing("X", 1000, "2025-05-01")]
 

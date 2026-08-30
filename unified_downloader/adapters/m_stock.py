@@ -27,12 +27,37 @@ from unified_downloader.exceptions import (
 logger = logging.getLogger(__name__)
 
 
-def _report_period_target_end(report_period):
+# #66 (2026-08-30): 财年制公司财年末月份映射. report_period 是 Longbridge
+# 财年制标签 (BABA "2027Q1" = 财年 2027 的 Q1 = 日历 2026年4-6月季度, 8/20
+# 发布), 财年末月 ≠ 12 的公司按自然年映射会把目标期错位一年 (8/20 真财报
+# 落在 2027 年窗口外, 选不到). 仅列已确认的财年制公司; 财年止 12 月
+# (含多数中概股) 与未列公司维持自然年映射.
+_FISCAL_YEAR_END_MONTH: Dict[str, int] = {
+    "BABA": 3,  # 阿里巴巴 财年止 3 月底
+    "NVDA": 1,  # 英伟达 财年止 1 月底 (FY2026 = 2025-02 ~ 2026-01)
+    "AAPL": 9,  # 苹果 财年止 9 月底
+}
+
+
+def fiscal_year_end_month(ticker: Optional[str]) -> Optional[int]:
+    """ticker → 财年末月份 (1-12); 非财年制 / 未知公司返回 None (#66)."""
+    if not ticker:
+        return None
+    return _FISCAL_YEAR_END_MONTH.get(str(ticker).upper().strip())
+
+
+def _report_period_target_end(report_period, fiscal_end_month=None):
     """report_period ('2026Q2'/'2026H1'/'2026FY') → 目标报告期结束日.
 
     W40-#50: 之前 H1/H2 半年报按 Q1/Q2 映射 month_end (H1→3-31, H2→6-30),
     窗口错一个季度 — RACE 等公司 7 月底发布的中报完全落在窗口外;
     H3/H4 无意义, 返回 None.
+
+    #66: 财年制公司 (fiscal_end_month 给定, 如 BABA=3) 按财年解析 —
+    财年 y 止于 y 年 fiscal_end_month 月底, Qk 距财年末 (Q4) 3*(4-k) 个月:
+    BABA 2027Q1 → 财年 2027 (止 2027-03-31) 的 Q1 → 2026-06-30,
+    而非自然年映射的 2027-03-31 (错位一年). fiscal_end_month=12 时公式
+    退化为自然年映射, 与旧行为一致.
     """
     if not report_period:
         return None
@@ -43,6 +68,21 @@ def _report_period_target_end(report_period):
             return None
         y = int(m.group(1))
         kind, idx = m.group(2), m.group(3)
+        if fiscal_end_month:
+            if not idx:  # FY → 财年末本身
+                month_end = fiscal_end_month
+            elif kind == "H":
+                if idx not in ("1", "2"):
+                    return None
+                month_end = fiscal_end_month - (6 if idx == "1" else 0)
+            else:
+                month_end = fiscal_end_month - 3 * (4 - int(idx))
+            yy = y
+            while month_end <= 0:
+                month_end += 12
+                yy -= 1
+            last_day = calendar.monthrange(yy, month_end)[1]
+            return datetime.date(yy, month_end, last_day)
         if not idx:
             return datetime.date(y, 12, 31)  # FY 无明确季度 → 12-31
         if kind == "H":
@@ -83,9 +123,15 @@ def _filing_filed_date(f: Dict[str, Any]) -> Optional[datetime.date]:
         return None
 
 
-def _quarter_window(report_period: Optional[str]) -> Optional[Tuple[datetime.date, datetime.date]]:
-    """report_period → 目标季度窗口 (window_lo, window_hi); 无法解析返回 None."""
-    target_end = _report_period_target_end(report_period)
+def _quarter_window(
+    report_period: Optional[str],
+    fiscal_end_month: Optional[int] = None,
+) -> Optional[Tuple[datetime.date, datetime.date]]:
+    """report_period → 目标季度窗口 (window_lo, window_hi); 无法解析返回 None.
+
+    #66: 财年制公司传 fiscal_end_month 按财年解析目标期.
+    """
+    target_end = _report_period_target_end(report_period, fiscal_end_month)
     if target_end is None:
         return None
     lo = target_end + datetime.timedelta(days=QUARTER_EARLY_DAYS)
@@ -94,14 +140,16 @@ def _quarter_window(report_period: Optional[str]) -> Optional[Tuple[datetime.dat
 
 
 def _quarter_window_missed(
-    filings: List[Dict[str, Any]], report_period: Optional[str]
+    filings: List[Dict[str, Any]],
+    report_period: Optional[str],
+    fiscal_end_month: Optional[int] = None,
 ) -> bool:
     """目标报告期有可解析窗口, 但 filings 里没有一条落在窗口内.
 
     #60 修复: 命中表示目标季度财报未发布 / 搜索缓存未收录 — 调用方应明确失败,
     绝不能回退按 size 选别的季度财报 (PDD 2026Q2 下成 2025Q4 3/26 的根因).
     """
-    window = _quarter_window(report_period)
+    window = _quarter_window(report_period, fiscal_end_month)
     if window is None:
         return False
     lo, hi = window
@@ -329,6 +377,7 @@ class MStockAdapter(BaseStockAdapter):
         year: Optional[int],
         size: int = 10,
         include_next_year: bool = False,
+        prev_year_floor: Optional[datetime.date] = None,
     ) -> List[Dict[str, Any]]:
         """
         使用edgartools搜索SEC filings
@@ -366,12 +415,23 @@ class MStockAdapter(BaseStockAdapter):
                         # size 截断, 只放宽年份会让次年后半年淹没结果 —
                         # 上界收到次年 6-30, 恰好覆盖发布窗口
                         allowed = {year, year + 1} if include_next_year else {year}
+                        # #66: 财年制公司目标期在标签年的上一年 (BABA "2027Q1"
+                        # 发布于 2026-08), 放开上一年; 下界收到目标期结束日 —
+                        # 财报不可能发布于报告期结束之前
+                        if prev_year_floor is not None:
+                            allowed.add(year - 1)
                         if filing_year not in allowed:
                             continue
                         if (
                             include_next_year
                             and filing_year == year + 1
                             and filing.filing_date.month > 6
+                        ):
+                            continue
+                        if (
+                            prev_year_floor is not None
+                            and filing_year == year - 1
+                            and filing.filing_date < prev_year_floor
                         ):
                             continue
                     except (ValueError, IndexError):
@@ -448,6 +508,7 @@ class MStockAdapter(BaseStockAdapter):
         year: Optional[int],
         size: int = 10,
         include_next_year: bool = False,
+        prev_year_floor: Optional[datetime.date] = None,
     ) -> List[Dict[str, Any]]:
         """
         使用sec-api搜索SEC filings
@@ -469,7 +530,11 @@ class MStockAdapter(BaseStockAdapter):
         if form_type:
             parts.append(f'formType:"{form_type}"')
         if year:
-            date_from = f"{year}-01-01"
+            # #66: 财年制公司目标期在标签年的上一年, date_from 下探到目标期
+            # 结束日 (财报不可能发布于报告期结束之前)
+            date_from = (
+                prev_year_floor.isoformat() if prev_year_floor else f"{year}-01-01"
+            )
             # W40-#50: Q4/FY 窗口跨年 — 扩到次年但上界收 6-30 (与新→旧
             # 返回 + size 截断的 edgar 行为对齐, 防次年后半年淹没窗口)
             if include_next_year:
@@ -512,6 +577,7 @@ class MStockAdapter(BaseStockAdapter):
         year: Optional[int],
         size: int = 10,
         include_next_year: bool = False,
+        prev_year_floor: Optional[datetime.date] = None,
     ) -> List[Dict[str, Any]]:
         """
         搜索SEC filings (优先edgartools，失败则sec-api)
@@ -541,6 +607,7 @@ class MStockAdapter(BaseStockAdapter):
                     results = self._search_edgar(
                         ticker, form_type, year, size,
                         include_next_year=include_next_year,
+                        prev_year_floor=prev_year_floor,
                     )
                     _dt_edgar = time.monotonic() - _t_edgar
                     logger.info(
@@ -566,6 +633,7 @@ class MStockAdapter(BaseStockAdapter):
                     return self._search_sec_api(
                         ticker, form_type, year, size,
                         include_next_year=include_next_year,
+                        prev_year_floor=prev_year_floor,
                     )
                 except Exception as e:
                     last_error = e
@@ -632,6 +700,10 @@ class MStockAdapter(BaseStockAdapter):
             )
 
         try:
+            # #66: 财年制公司 (BABA/NVDA/AAPL...) 按财年解析目标期与窗口 —
+            # report_period 是 Longbridge 财年制标签, 自然年映射对财年末月
+            # ≠ 12 的公司整体错位一年 (BABA 2027Q1 = 2026年4-6月季度)
+            fiscal_end_month = fiscal_year_end_month(ticker)
             # W39 8-9 RACE 修复: 6-K 是"封面+exhibit"结构, 同一公司一年有几十条 6-K
             # (普通 PR / 董事会变动 / 财报). 若只取 size=1 (最新一条), 可能取到普通 PR
             # (如 RACE 7-31 fnvbb310726prex.htm 3KB), 而非 Q2 财报 (7-30 interim report
@@ -639,32 +711,53 @@ class MStockAdapter(BaseStockAdapter):
             size = 10 if form_type == "6-K" else 1
             # W40-#50: Q4/FY/H2 的财报窗口落在次年 1~3 月 — 搜索层要允许
             # 次年 filing, 否则窗口逻辑永远空转、回退 size 启发式选错文档
-            _target_end = _report_period_target_end(report_period)
+            _target_end = _report_period_target_end(report_period, fiscal_end_month)
             include_next_year = bool(
                 form_type == "6-K"
                 and year is not None
                 and _target_end is not None
                 and _target_end.month == 12
             )
+            # #66: 财年制公司标签年可能大于发布年 (BABA "2027Q1" 发布于
+            # 2026-08) — 搜索层放开上一年, 下界收到目标期结束日, 否则窗口
+            # 命中的 filing 根本不在搜索结果里 (W40-#50 include_next_year
+            # 的镜像场景)
+            prev_year_floor = (
+                _target_end
+                if form_type == "6-K"
+                and year is not None
+                and _target_end is not None
+                and _target_end.year < year
+                else None
+            )
             filings = self._search_filings(
                 ticker, form_type, year, size=size,
                 include_next_year=include_next_year,
+                prev_year_floor=prev_year_floor,
             )
 
             if not filings:
                 return _try_ir_fallback()
 
             filing = filings[0]
-            if form_type == "6-K" and _quarter_window(report_period) is not None:
+            if (
+                form_type == "6-K"
+                and _quarter_window(report_period, fiscal_end_month) is not None
+            ):
                 # #60/#62: report_period 可解析出目标季度窗口时, 6-K 选择全权交给
                 # _pick_earnings_6k (含单条 filing). 返回 None = 窗口内无 filing
                 # (#60: 财报未发布/缓存未收录, 旧逻辑回退 max(size) 跨季度错选,
                 # PDD 2026Q2 下成 2025Q4 3/26) 或窗口内只有非财报公告 (#62: 全
                 # 0 分且 size 低于财报下限, PDD 8/21 董事去世公告 11.1KB) →
                 # 明确失败等真财报, 绝不回退跨季度 size 最大, 也不下载公告.
-                picked = self._pick_earnings_6k(filings, report_period=report_period)
+                picked = self._pick_earnings_6k(
+                    filings, report_period=report_period,
+                    fiscal_end_month=fiscal_end_month,
+                )
                 if picked is None:
-                    if _quarter_window_missed(filings, report_period):
+                    if _quarter_window_missed(
+                        filings, report_period, fiscal_end_month
+                    ):
                         detail = "窗口内无 filing, 财报可能未发布或搜索缓存未收录"
                     else:
                         detail = (
@@ -682,7 +775,10 @@ class MStockAdapter(BaseStockAdapter):
                 filing = picked
             elif form_type == "6-K" and len(filings) > 1:
                 # 无 report_period (或无法解析) → 旧逻辑: 打分优先, NVO size 回退.
-                picked = self._pick_earnings_6k(filings, report_period=report_period)
+                picked = self._pick_earnings_6k(
+                    filings, report_period=report_period,
+                    fiscal_end_month=fiscal_end_month,
+                )
                 if picked is not None:
                     filing = picked
                 else:
@@ -744,6 +840,7 @@ class MStockAdapter(BaseStockAdapter):
         self,
         filings: List[Dict[str, Any]],
         report_period: Optional[str] = None,
+        fiscal_end_month: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """从多条 6-K 中选财报特征最强的.
 
@@ -778,8 +875,9 @@ class MStockAdapter(BaseStockAdapter):
         # 目标季度窗口 (季度结束后第 N~M 天发布财报): 常量提到模块级
         # (QUARTER_EARLY_DAYS / QUARTER_LATE_DAYS), _download_form 也要用.
         # 解析 report_period → 目标报告期结束日 (W40-#50: 抽出共用 helper,
-        # 同步修复 H1/H2 按季度映射错一个季度的 bug)
-        target_end = _report_period_target_end(report_period)
+        # 同步修复 H1/H2 按季度映射错一个季度的 bug; #66: 财年制公司按
+        # fiscal_end_month 财年解析)
+        target_end = _report_period_target_end(report_period, fiscal_end_month)
 
         def _exhibit_score(f: Dict[str, Any]) -> int:
             """计算 filing 的 exhibit 财报特征分 (旧逻辑)."""
