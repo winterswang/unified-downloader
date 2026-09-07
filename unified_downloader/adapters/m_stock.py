@@ -36,6 +36,7 @@ _FISCAL_YEAR_END_MONTH: Dict[str, int] = {
     "BABA": 3,  # 阿里巴巴 财年止 3 月底
     "NVDA": 1,  # 英伟达 财年止 1 月底 (FY2026 = 2025-02 ~ 2026-01)
     "AAPL": 9,  # 苹果 财年止 9 月底
+    "LULU": 1,  # 露露乐蒙 财年止 1 月底 (周日最近 1/31, 与 morning-brief verifier 表同源)
 }
 
 
