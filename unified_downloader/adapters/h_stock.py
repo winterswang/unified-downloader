@@ -12,6 +12,7 @@ from pathlib import Path
 from unified_downloader.adapters.base import BaseStockAdapter
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
+from unified_downloader.exceptions import UnsupportedOperationError
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
 from unified_downloader.infra.rate_limiter import RateLimiter
 
@@ -205,24 +206,50 @@ class HStockAdapter(BaseStockAdapter):
         """下载港股文档"""
         doc_type_lower = document_type.lower()
 
-        if doc_type_lower in ["annual_report", "年报", "年度报告", "annual report"]:
+        if doc_type_lower in self._ANNUAL_DOC_TYPES:
             return self._download_annual_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["interim_report", "中期报告", "中期"]:
+        elif doc_type_lower in self._INTERIM_DOC_TYPES:
             return self._download_interim_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["prospectus", "招股说明书", "s1"]:
+        elif doc_type_lower in self._PROSPECTUS_DOC_TYPES:
             return self._download_prospectus(code, datasource, checkpoint, on_progress)
-        elif doc_type_lower in ["quarterly", "季度"]:
+        elif doc_type_lower in self._QUARTERLY_DOC_TYPES:
             return self._download_quarterly_report(
                 code, year, datasource, checkpoint, on_progress
             )
         else:
-            return self._download_annual_report(
-                code, year, datasource, checkpoint, on_progress
+            raise UnsupportedOperationError(
+                f"港股适配器不支持文档类型: {document_type!r} "
+                f"(支持: annual_report/interim_report/quarterly/"
+                f"q1_report/q3_report/prospectus)"
             )
+
+    # 分发表常量 (与 a_stock 2026-10-21 修复 / m_stock W40-#50 同款先例)
+    _ANNUAL_DOC_TYPES = frozenset(
+        {"annual_report", "年报", "年度报告", "annual report"}
+    )
+    # "半年报" 之前只在 _SEMANTIC_LABELS 里、分发不认 (同类名字漂移), 一并补上
+    _INTERIM_DOC_TYPES = frozenset(
+        {"interim_report", "中期报告", "中期", "半年报"}
+    )
+    # "招股书" 之前只在 _SEMANTIC_LABELS 里、分发不认 (同类名字漂移), 一并补上
+    _PROSPECTUS_DOC_TYPES = frozenset(
+        {"prospectus", "招股说明书", "招股书", "s1"}
+    )
+    # 港交所「季度业绩」(QUARTERLY_RESULTS) 本身不区分 Q1/Q3, 都是同一
+    # 披露类别 → q1_report/q3_report 及同义写法统一走 _download_quarterly_report。
+    # 之前这几个名字不在分发里, 与 a_stock 同类问题: 静默落 else 当年报下载。
+    _QUARTERLY_DOC_TYPES = frozenset(
+        {
+            "quarterly", "季度",
+            "q1_report", "q3_report",
+            "quarterly_q1", "quarterly_q3",
+            "q1", "q3",
+        }
+    )
 
     async def async_download(
         self,
@@ -256,11 +283,16 @@ class HStockAdapter(BaseStockAdapter):
         return None
 
     # W40-#49: doc_type → 文件名 label, 与 download() 分发一致
+    # (未知类型现在抛 UnsupportedOperationError, 不会走到 label 回退)
     _SEMANTIC_LABELS = {
         "annual_report": "ANNUAL_REPORT", "年报": "ANNUAL_REPORT",
+        "年度报告": "ANNUAL_REPORT", "annual report": "ANNUAL_REPORT",
         "interim_report": "INTERIM_REPORT", "中期报告": "INTERIM_REPORT",
-        "半年报": "INTERIM_REPORT",
+        "半年报": "INTERIM_REPORT", "中期": "INTERIM_REPORT",
         "quarterly": "QUARTERLY_REPORT", "季度": "QUARTERLY_REPORT",
+        "q1_report": "QUARTERLY_REPORT", "q3_report": "QUARTERLY_REPORT",
+        "quarterly_q1": "QUARTERLY_REPORT", "quarterly_q3": "QUARTERLY_REPORT",
+        "q1": "QUARTERLY_REPORT", "q3": "QUARTERLY_REPORT",
         "prospectus": "PROSPECTUS", "招股说明书": "PROSPECTUS",
         "招股书": "PROSPECTUS", "s1": "PROSPECTUS",
     }
