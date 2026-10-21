@@ -12,6 +12,7 @@ import pandas as pd
 from unified_downloader.adapters.base import BaseStockAdapter
 from unified_downloader.models.enums import Market
 from unified_downloader.models.entities import DownloadResult, DataSource
+from unified_downloader.exceptions import UnsupportedOperationError
 from unified_downloader.infra.http_client import HTTPClient, AsyncHTTPClient
 from unified_downloader.infra.rate_limiter import RateLimiter
 
@@ -244,34 +245,53 @@ class AStockAdapter(BaseStockAdapter):
         """下载A股文档"""
         doc_type_lower = document_type.lower()
 
-        if doc_type_lower in ["annual_report", "年报", "年度报告"]:
+        if doc_type_lower in self._ANNUAL_DOC_TYPES:
             return self._download_annual_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["interim_report", "中期报告", "半年报"]:
+        elif doc_type_lower in self._INTERIM_DOC_TYPES:
             return self._download_interim_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["quarterly_q1", "一季报", "q1"]:
+        elif doc_type_lower in self._Q1_DOC_TYPES:
             return self._download_report(
                 code, year, "一季报", "quarterly_report", checkpoint, on_progress
             )
-        elif doc_type_lower in ["quarterly_q3", "三季报", "q3"]:
+        elif doc_type_lower in self._Q3_DOC_TYPES:
             return self._download_report(
                 code, year, "三季报", "quarterly_report", checkpoint, on_progress
             )
-        elif doc_type_lower in ["quarterly", "季度"]:
+        elif doc_type_lower in self._AMBIGUOUS_QUARTERLY_DOC_TYPES:
             return self._download_quarterly_report(
                 code, year, datasource, checkpoint, on_progress
             )
-        elif doc_type_lower in ["prospectus", "招股说明书", "招股书", "s1"]:
+        elif doc_type_lower in self._PROSPECTUS_DOC_TYPES:
             return self._download_prospectus(
                 code, datasource, checkpoint, on_progress
             )
         else:
-            return self._download_annual_report(
-                code, year, datasource, checkpoint, on_progress
+            raise UnsupportedOperationError(
+                f"A股适配器不支持文档类型: {document_type!r} "
+                f"(支持: annual_report/interim_report/quarterly/"
+                f"q1_report/q3_report/prospectus)"
             )
+
+    # 分发表常量 (与 m_stock W40-#50 同款先例, 2026-10-21 a_stock 补齐):
+    # CLI -t / MCP document_type 允许的每个 A 股类型必须命中一条分支。
+    # q1_report/q3_report 之前不在分发里, 静默落 else 被当年报下载
+    # (2026-10-20 财报日清单实锤: 300750/000933 2026Q3 要三季报,
+    # 下到 *_ANNUAL_REPORT.PDF, verifier 判 SUSPICIOUS_WRONG_PERIOD)。
+    # 未知类型显式抛错, 不再静默当年报 (要年报给年报以外 = 错误数据)。
+    _ANNUAL_DOC_TYPES = frozenset({"annual_report", "年报", "年度报告"})
+    _INTERIM_DOC_TYPES = frozenset({"interim_report", "中期报告", "半年报"})
+    _Q1_DOC_TYPES = frozenset({"quarterly_q1", "一季报", "q1", "q1_report"})
+    _Q3_DOC_TYPES = frozenset({"quarterly_q3", "三季报", "q3", "q3_report"})
+    # "quarterly"/"季度" 语义歧义 (一季报或三季报), 交给
+    # _download_quarterly_report 先一季报后三季报
+    _AMBIGUOUS_QUARTERLY_DOC_TYPES = frozenset({"quarterly", "季度"})
+    _PROSPECTUS_DOC_TYPES = frozenset(
+        {"prospectus", "招股说明书", "招股书", "s1"}
+    )
 
     async def async_download(
         self,
@@ -296,17 +316,17 @@ class AStockAdapter(BaseStockAdapter):
         )
 
     # W40-#49: doc_type → 文件名 label, 与 download() 分发一致
-    # (quarterly_q1/q3/quarterly 都是 quarterly_report; 未知类型按年报,
-    # 同 download() 的 else 分支)
+    # (quarterly_q1/q3/quarterly/q1_report/q3_report 都是 quarterly_report;
+    # 未知类型现在抛 UnsupportedOperationError, 不会走到 label 回退)
     _SEMANTIC_LABELS = {
         "annual_report": "ANNUAL_REPORT", "年报": "ANNUAL_REPORT",
         "年度报告": "ANNUAL_REPORT",
         "interim_report": "INTERIM_REPORT", "中期报告": "INTERIM_REPORT",
         "半年报": "INTERIM_REPORT",
         "quarterly_q1": "QUARTERLY_REPORT", "q1": "QUARTERLY_REPORT",
-        "一季报": "QUARTERLY_REPORT",
+        "一季报": "QUARTERLY_REPORT", "q1_report": "QUARTERLY_REPORT",
         "quarterly_q3": "QUARTERLY_REPORT", "q3": "QUARTERLY_REPORT",
-        "三季报": "QUARTERLY_REPORT",
+        "三季报": "QUARTERLY_REPORT", "q3_report": "QUARTERLY_REPORT",
         "quarterly": "QUARTERLY_REPORT", "季度": "QUARTERLY_REPORT",
         "prospectus": "PROSPECTUS", "招股说明书": "PROSPECTUS",
         "招股书": "PROSPECTUS", "s1": "PROSPECTUS",
