@@ -145,3 +145,96 @@ class TestContentSniff:
             filings, report_period="2027Q1", fiscal_end_month=3)
         assert picked is not None
         assert adapter._http_client.get.call_count <= CONTENT_SNIFF_MAX_CANDIDATES
+
+
+# SKHY 11-02 回归: 单文档 6-K (SK hynix) 无 EX-99 exhibit, 正文=primary doc.
+# 真财报「Preliminary Results of Operations」24KB 远小于同窗库藏股公告 94KB,
+# 旧 "≥50KB 才嗅探 + size 最大" 双启发式误选库藏股公告 -> verifier 0/6 拦截.
+_SKHY_EARNINGS_TEXT = (
+    "Preliminary Results of Operations. Revenue for the third quarter of "
+    "2026 was KRW 24,448 billion and operating income was KRW 3,642 billion. "
+) * 8
+
+_SKHY_TREASURY_TEXT = (
+    "Report on Acquisition of Treasury Shares From August 20, 2026 to "
+    "October 21, 2026, the Company acquired treasury shares through "
+    "open-market purchases. "
+) * 8
+
+
+def _mk_single_doc_filing(accession: str, size: int, filed_at: str):
+    """单文档 6-K filing: 无 _exhibits, primary doc 即正文."""
+    doc_url = (
+        f"https://www.sec.gov/Archives/edgar/data/2120882/"
+        f"{accession.replace('-', '')}/d{accession.replace('-', '')}d6k.htm"
+    )
+    return {
+        "ticker": "SKHY",
+        "formType": "6-K",
+        "filedAt": filed_at,
+        "accessionNo": accession,
+        "cik": "2120882",
+        "companyName": "SK hynix Inc.",
+        "linkToTxt": doc_url,
+        "linkToHtml": doc_url,
+        "source": "edgar",
+        "size": size,
+    }
+
+
+class TestSingleDoc6kContentSniff:
+    """SKHY 11-02: 单文档 6-K 无 exhibit 时按 primary doc 内容选"""
+
+    @pytest.fixture
+    def adapter(self):
+        adapter = MStockAdapter(MagicMock(), [])
+        adapter._sec_user_agent = "test-agent@example.com"
+        return adapter
+
+    def test_small_single_doc_earnings_beats_bigger_announcement(self, adapter):
+        """24KB 真财报 vs 94KB 库藏股公告 -> primary doc 内容密度胜出."""
+        filings = [
+            _mk_single_doc_filing("0001193125-26-435019", 93_982, "2026-10-28"),
+            _mk_single_doc_filing("0001193125-26-434994", 23_990, "2026-10-28"),
+        ]
+        urls = {
+            "https://www.sec.gov/Archives/edgar/data/2120882/000119312526435019/d000119312526435019d6k.htm": _FakeResp(
+                _SKHY_TREASURY_TEXT.encode()),
+            "https://www.sec.gov/Archives/edgar/data/2120882/000119312526434994/d000119312526434994d6k.htm": _FakeResp(
+                _SKHY_EARNINGS_TEXT.encode()),
+        }
+        adapter._http_client = MagicMock()
+        adapter._http_client.get.side_effect = lambda url, headers=None: urls[url]
+
+        picked = adapter._pick_earnings_6k(
+            filings, report_period="2026Q3", fiscal_end_month=None)
+        assert picked is not None
+        assert picked["accessionNo"] == "0001193125-26-434994"
+
+    def test_single_doc_all_fetch_fail_falls_back_to_size_max(self, adapter):
+        """单文档 6-K 拉取全失败 -> 退回 size 最大 + ≥50KB 闸 (旧行为)."""
+        filings = [
+            _mk_single_doc_filing("0001193125-26-435019", 93_982, "2026-10-28"),
+            _mk_single_doc_filing("0001193125-26-434994", 23_990, "2026-10-28"),
+        ]
+        adapter._http_client = MagicMock()
+        adapter._http_client.get.side_effect = ConnectionError("network down")
+
+        picked = adapter._pick_earnings_6k(
+            filings, report_period="2026Q3", fiscal_end_month=None)
+        assert picked is not None
+        assert picked["accessionNo"] == "0001193125-26-435019"
+
+    def test_single_doc_all_zero_score_below_gate_returns_none(self, adapter):
+        """单文档全 0 分且 size 最大者低于 50KB -> 维持 #62 fail-closed None."""
+        filings = [
+            _mk_single_doc_filing("OBIT-SMALL", 11_100, "2026-08-21"),
+            _mk_single_doc_filing("PR-SMALL", 12_400, "2026-08-22"),
+        ]
+        adapter._http_client = MagicMock()
+        adapter._http_client.get.side_effect = _FakeResp(
+            _SKHY_TREASURY_TEXT.encode())
+
+        picked = adapter._pick_earnings_6k(
+            filings, report_period="2026Q3", fiscal_end_month=None)
+        assert picked is None

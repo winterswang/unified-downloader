@@ -837,6 +837,11 @@ class MStockAdapter(BaseStockAdapter):
         "revenue", "net income", "gross profit", "earnings per share",
         "diluted", "EBITDA", "operating income", "financial results",
         "second quarter", "third quarter", "fourth quarter", "first quarter",
+        # SKHY 11-02: 韩系/欧系 ADR 压缩披露用 IFRS 措辞 — SK hynix Q3 全文
+        # 旧词表仅命中 revenue×1, 同窗「股东回报计划」靠 third quarter×2 反超
+        # 误选. 实测扩充后真财报 9 分 vs 次名 2 分.
+        "operating profit", "net profit", "preliminary results",
+        "quarterly results", "interim results", "financial statements",
     )
     # 文件名特征词: 财报型 exhibit 文件名常含这些 (RACE: fnvq22026results /
     # ferrarinvinterimreport-063; 普通 PR 是 fnvbb...prex)
@@ -929,6 +934,18 @@ class MStockAdapter(BaseStockAdapter):
                         best_in = f
                 if best_score_in > 0:
                     return best_in
+                # SKHY 11-02: 单文档 6-K (SK hynix) exhibit 打分恒 0, 且真财报
+                # 可以远小于 50KB (SKHY Q3「Preliminary Results of Operations」
+                # 24KB, 同窗库藏股公告 94KB) — 先对窗口内全体候选做内容嗅探
+                # (>1 条才嗅探, 单候选保持下方 size 快路径), 有财报关键词赢家
+                # 直接采信; 嗅探无赢家 (全 0 分/拉取失败) 才落回 size 最大 +
+                # ≥50KB fail-closed 闸 (#62 PDD 8/21 讣告 11.1KB 场景不变).
+                # 旧 #68 的 ≥50KB 预筛已并入全体候选嗅探 (嗅探只读头部字节,
+                # 成本与候选大小无关, 预筛反而挡掉 24KB 级真财报).
+                if len(in_window) > 1:
+                    sniffed = self._pick_by_content_sniff(in_window)
+                    if sniffed is not None:
+                        return sniffed
                 # 全无 exhibit 可打分 → 选窗口内 size 最大, 但先过"像不像财报"
                 # 下限 (#62): 窗口内常混有非财报公告 (董事变动/PR), 财报 filing
                 # 通常 ≥ MIN_EARNINGS_FILING_SIZE (50KB). fail-closed 双拦截:
@@ -955,19 +972,6 @@ class MStockAdapter(BaseStockAdapter):
                             f"返回 None 等可证数据 (edgar 恢复/财报入库)"
                         )
                     return None
-                # #68: 窗口内多条 ≥ 下限的候选且元数据全 0 分 (描述全是通用
-                # "EXHIBIT 99.1") 时, "size 最大" 会误选大号非财报申报 -
-                # BABA 实测 8/6 月度股份申报 1.24MB 比真财报 481KB 还大.
-                # 拉各候选 exhibit 头部内容做财报关键词计数, 密度最高者胜出;
-                # 全部拉取失败退回 size 最大 (旧行为).
-                big_candidates = [
-                    f for f in in_window
-                    if int(f.get("size") or 0) >= MIN_EARNINGS_FILING_SIZE
-                ]
-                if len(big_candidates) > 1:
-                    sniffed = self._pick_by_content_sniff(big_candidates)
-                    if sniffed is not None:
-                        return sniffed
                 logger.info(
                     f"[m_stock] 6-K 窗口内无 exhibit 财报分, 选 size 最大: "
                     f"{best_in.get('accessionNo')} size={best_in.get('size')}"
@@ -1008,6 +1012,11 @@ class MStockAdapter(BaseStockAdapter):
         拉 size top-N 候选的前几个 exhibit 头部做 _EARNINGS_KEYWORDS 计数,
         密度最高者胜出. 全部拉取失败 (网络/限速) 返回 None, 调用方退回
         size 最大 (旧行为, fail-open 与旧路径一致).
+
+        SKHY 11-02 扩展: 单文档 6-K (SK hynix/NVO 等) 正文就是 primary doc,
+        无独立 EX-99 exhibit — 只嗅探 exhibit 时此类 filing 恒 0 分, 嗅探空转.
+        无 exhibit 时退而嗅探 primary doc 头部, URL 取法与 _download_filing
+        的 link 优先级一致 (linkToTxt/html_url/linkToHtml/linkToFilingDetails).
         """
         ranked = sorted(
             filings, key=lambda f: int(f.get("size") or 0), reverse=True
@@ -1027,11 +1036,23 @@ class MStockAdapter(BaseStockAdapter):
             exhibits = [
                 ex for ex in f.get("_exhibits", []) if ex.get("url")
             ][:CONTENT_SNIFF_MAX_EXHIBITS]
+            # SKHY 11-02: 单文档 6-K 无 exhibit 时嗅探 primary doc 头部,
+            # URL 优先级与 _download_filing 的 link 取法一致
+            urls = [ex["url"] for ex in exhibits]
+            if not urls:
+                primary = (
+                    f.get("linkToTxt")
+                    or f.get("html_url")
+                    or f.get("linkToHtml")
+                    or f.get("linkToFilingDetails")
+                )
+                if primary:
+                    urls = [primary]
             score = 0
-            for ex in exhibits:
+            for url in urls:
                 try:
                     self._rate_limiter.wait("edgar_download")
-                    resp = self._http_client.get(ex["url"], headers=headers)
+                    resp = self._http_client.get(url, headers=headers)
                     if resp.status_code != 200:
                         continue
                     chunk = resp.content[:CONTENT_SNIFF_MAX_BYTES]
@@ -1041,7 +1062,7 @@ class MStockAdapter(BaseStockAdapter):
                     )
                 except Exception as e:
                     logger.debug(
-                        f"[m_stock] content sniff 拉取失败 {ex.get('url')}: {e}"
+                        f"[m_stock] content sniff 拉取失败 {url}: {e}"
                     )
             logger.info(
                 f"[m_stock] 6-K 内容嗅探: {f.get('accessionNo')} "
