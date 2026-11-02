@@ -30,6 +30,9 @@ class HKExAPI:
     ANNUAL_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13300"}
     INTERIM_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13400"}
     QUARTERLY_RESULTS = {"t1code": "10000", "t2Gcode": "3", "t2code": "13600"}
+    # 全类别检索 (不限披露类别) — 9992 11-02: 泡泡玛特把「第三季度最新業務狀況」
+    # 挂公告类别,「季度业绩」类别 (13600) 恒空, 需按标题关键词回退
+    ALL_CATEGORIES = {"t1code": "-2", "t2Gcode": "-2", "t2code": "-2"}
     # 未上市申请人招股书 (Application Proof) - t1code=91000 在 titleSearchServlet 中
     # 对已上市公司无效，仅用于 AP/PHIP 阶段
     IPO_PROSPECTUS_AP = {"t1code": "91000", "t2Gcode": "-2", "t2code": "91200"}
@@ -218,7 +221,8 @@ class HStockAdapter(BaseStockAdapter):
             return self._download_prospectus(code, datasource, checkpoint, on_progress)
         elif doc_type_lower in self._QUARTERLY_DOC_TYPES:
             return self._download_quarterly_report(
-                code, year, datasource, checkpoint, on_progress
+                code, year, datasource, checkpoint, on_progress,
+                report_period=kwargs.get("report_period"),
             )
         else:
             raise UnsupportedOperationError(
@@ -339,6 +343,22 @@ class HStockAdapter(BaseStockAdapter):
             on_progress,
         )
 
+    # 季度 → 披露易标题关键词. 港股季度披露命名不统一 (「第三季度最新業務狀況」
+    # /「第三季度業務更新」/含 Q3 英文写法), 每档给中文优先、英文兜底两个词
+    _QUARTER_TITLE_WORDS = {
+        "Q1": ("第一季度", "Q1"),
+        "Q3": ("第三季度", "Q3"),
+    }
+
+    @classmethod
+    def _quarter_title_words(cls, report_period: Optional[str]) -> List[str]:
+        """report_period ('2026Q3') → 标题回退检索词; 未知期次给 Q1/Q3 全集"""
+        if report_period:
+            q = report_period.strip().upper()[-2:]
+            if q in cls._QUARTER_TITLE_WORDS:
+                return list(cls._QUARTER_TITLE_WORDS[q])
+        return ["第三季度", "第一季度"]
+
     def _download_quarterly_report(
         self,
         code: str,
@@ -346,9 +366,16 @@ class HStockAdapter(BaseStockAdapter):
         datasource: Optional[DataSource],
         checkpoint: Optional[Dict[str, Any]],
         on_progress: Optional[Callable],
+        report_period: Optional[str] = None,
     ) -> DownloadResult:
-        """下载季度报告"""
-        return self._download_report(
+        """下载季度报告
+
+        9992 11-02: 披露易「季度业绩」类别 (t2code=13600) 只收正式季度业绩公告;
+        不少港股 (POP MART 等) 把季度运营更新挂普通公告类别 → 类别检索恒空,
+        NO_FILINGS_FOUND. 类别空手时回退同 stockId + 季度标题关键词检索
+        (限本股、排除翌日披露报表/月报表噪音), 命中即下载.
+        """
+        result = self._download_report(
             code,
             year,
             "quarterly_report",
@@ -356,6 +383,52 @@ class HStockAdapter(BaseStockAdapter):
             checkpoint,
             on_progress,
         )
+        if result.success or result.error_code != "NO_FILINGS_FOUND":
+            return result
+
+        stock_code = code.upper().zfill(5)
+        stock_id = self._get_stock_id(stock_code)
+        if not stock_id:
+            return result
+
+        if year:
+            from_date = date(year, 1, 1)
+            to_date = date(year, 12, 31)
+        else:
+            to_date = date.today()
+            from_date = to_date - timedelta(days=365)
+
+        api = self._get_api()
+        noise_words = ("翌日披露", "月報表", "月报表")
+        for word in self._quarter_title_words(report_period):
+            self._rate_limiter.wait()
+            documents = api.search_documents(
+                from_date=from_date,
+                to_date=to_date,
+                stock_id=stock_id,
+                doc_type=HKExAPI.ALL_CATEGORIES,
+                title=word,
+            )
+            # 限本股 + 排除翌日披露报表/月报表噪音 (标题关键词本身已滤掉大部分)
+            documents = [
+                d for d in documents
+                if stock_code in (d.get("stock_code") or "").replace("<br/>", " ")
+                and not any(kw in (d.get("title") or "") for kw in noise_words)
+            ]
+            if documents:
+                logger.info(
+                    f"[h_stock] 季度业绩类别空手, 标题回退命中 '{word}': "
+                    f"{documents[0].get('title')} @ {documents[0].get('date_time')}"
+                )
+                return self._download_from_doc(
+                    documents[0], stock_code, "quarterly_report",
+                    checkpoint, on_progress,
+                )
+
+        logger.info(
+            f"[h_stock] {stock_code} 季度业绩类别与标题回退均空手, 维持原失败"
+        )
+        return result
 
     def _download_prospectus(
         self,
